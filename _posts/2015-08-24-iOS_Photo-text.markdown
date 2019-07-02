@@ -36,12 +36,13 @@ tags:
 
 第一步，解析plist文件，转化为数组。
 
-```
+```objc
 NSString *filePath = [[NSBundle mainBundle] pathForResource:@"emoticons" ofType:@"plist"];
 NSArray *face = [NSArray arrayWithContentsOfFile:filePath];
 ```
 第二步，将字符串转换为可变属性字符串，并通过正则表达式匹配出所有的要替换的字符。
-```
+
+```objc
 //1、创建一个可变的属性字符串
 NSMutableAttributedString *attributeString = [[NSMutableAttributedString alloc] initWithString:text];
 //2、通过正则表达式来匹配字符串
@@ -57,7 +58,7 @@ NSArray *resultArray = [rematchesInString:text options:0 range:NSMakeRange(0, te
 数组中都是NSTextCheckingResult对象，它包含了特殊字符在整个字符串中的位置等信息。
 
 第三步，将特殊字符与对应表情关联
-```
+```objc
 NSMutableArray *imageArray = [NSMutableArray arrayWithCapacity:resultArray.count];
 //根据匹配范围来用图片进行相应的替换
 for(NSTextCheckingResult *match in resultArray) {
@@ -87,7 +88,7 @@ for(NSTextCheckingResult *match in resultArray) {
 }
 ```
 第四步，将特殊字符替换成图片
-```
+```objc
 // 4、从后往前替换，否则会引起位置问题
 for (int i = (int)imageArray.count-1; i >=0; i--) {
     NSRange range;
@@ -98,7 +99,7 @@ for (int i = (int)imageArray.count-1; i >=0; i--) {
 ```
 
 用法：
-```
+```objc
 NSString *content = @"文字加上表情[得意][酷][呲牙]";
 NSMutableAttributedString *attrStr = [Utility emotionStrWithString:content];
 _contentLabel.attributedText= attrStr;
@@ -113,7 +114,7 @@ _contentLabel.attributedText= attrStr;
 有了上面的方法，这个效果更容易实现，只需要将某些图片给它设置一个固定的字符对应即可。
 
 与以上方法主要不同点在于正则表达式：
-```
+```objc
 //2、匹配字符串
 NSError *error = nil;
 NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:string options:NSRegularExpressionCaseInsensitive error:&error];
@@ -124,7 +125,7 @@ if (!re) {
 ```
 
 用法：
-```
+```objc
 NSString *praiseStr = @"路人甲、路人乙";
 NSString *praiseInfo = [NSStringstringWithFormat:@"<点赞> %@",praiseStr];
 NSDictionary *attributesForAll = @{NSFontAttributeName:[UIFontsystemFontOfSize:14.0],NSForegroundColorAttributeName:[UIColorgrayColor]};
@@ -135,7 +136,7 @@ NSMutableAttributedString *attrStr = [Utility exchangeString:@"<点赞>" withTex
 ## 彩蛋
 
 1、计算动态文字的长度
-```
+```objc
 NSMutableAttributedString *content = [Utility emotionStrWithString:_dynamic.text];
 [content addAttribute:NSFontAttributeName value:kContentFont  range:NSMakeRange(0, content.length)];
 CGSize maxSize = CGSizeMake(kDynamicWidth,MAXFLOAT);
