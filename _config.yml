@@ -17,7 +17,7 @@ zhihu_username:     Haley-Wong
 # weibo_username:     Haley-Wong
 #twitter_username:   
 #facebook_username:  
-linkedin_username:  文康-谭-652a4a12a
+linkedin_username:  哈雷
 
 
 
@@ -65,7 +65,7 @@ disqus_username: Haley-Wong
 
 # Sidebar settings
 sidebar: true                           # whether or not using Sidebar.
-sidebar-about-description: "Time is elapsing."
+sidebar-about-description: "厚积薄发."
 sidebar-avatar: /img/avatar.jpg      # use absolute URL, seeing it's used in both `/` and `/about/`
 
 
