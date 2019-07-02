@@ -43,9 +43,11 @@ NSArray *face = [NSArray arrayWithContentsOfFile:filePath];
 第二步，将字符串转换为可变属性字符串，并通过正则表达式匹配出所有的要替换的字符。
 
 ```objc
-//1、创建一个可变的属性字符串
+// 1、创建一个可变的属性字符串
+
 NSMutableAttributedString *attributeString = [[NSMutableAttributedString alloc] initWithString:text];
-//2、通过正则表达式来匹配字符串
+// 2、通过正则表达式来匹配字符串
+
 NSString *regex_emoji = @"\\[[a-zA-Z0-9\\/\\u4e00-\\u9fa5]+\\]";//匹配表情
 NSError *error =nil;
 NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:regex_emoji options:NSRegularExpressionCaseInsensitive error:&error];
@@ -58,7 +60,7 @@ NSArray *resultArray = [rematchesInString:text options:0 range:NSMakeRange(0, te
 数组中都是NSTextCheckingResult对象，它包含了特殊字符在整个字符串中的位置等信息。
 
 第三步，将特殊字符与对应表情关联
-```objc
+```
 NSMutableArray *imageArray = [NSMutableArray arrayWithCapacity:resultArray.count];
 //根据匹配范围来用图片进行相应的替换
 for(NSTextCheckingResult *match in resultArray) {
