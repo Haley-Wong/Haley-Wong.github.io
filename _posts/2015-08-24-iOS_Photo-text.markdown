@@ -60,7 +60,7 @@ NSArray *resultArray = [rematchesInString:text options:0 range:NSMakeRange(0, te
 数组中都是NSTextCheckingResult对象，它包含了特殊字符在整个字符串中的位置等信息。
 
 第三步，将特殊字符与对应表情关联
-```
+```objective-c
 NSMutableArray *imageArray = [NSMutableArray arrayWithCapacity:resultArray.count];
 //根据匹配范围来用图片进行相应的替换
 for(NSTextCheckingResult *match in resultArray) {
