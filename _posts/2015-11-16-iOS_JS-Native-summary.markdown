@@ -13,6 +13,7 @@ iOS开发免不了要与UIWebView打交道，然后就要涉及到JS与原生OC�
 ## JS调用原生OC篇
 ### 方式一 
 第一种方式是用JS发起一个假的URL请求，然后利用UIWebView的代理方法拦截这次请求，然后再做相应的处理。
+
 我写了一个简单的HTML网页和一个btn点击事件用来与原生OC交互，HTML代码如下：
 ``` 
 <html>
@@ -52,6 +53,7 @@ iOS开发免不了要与UIWebView打交道，然后就要涉及到JS与原生OC�
 </html>
 ```
 然后在项目的控制器中实现UIWebView的代理方法：
+
 ```
 #pragma mark - UIWebViewDelegate
 - (BOOL)webView:(UIWebView *)webView shouldStartLoadWithRequest:(NSURLRequest *)request navigationType:(UIWebViewNavigationType)navigationType
@@ -77,26 +79,31 @@ iOS开发免不了要与UIWebView打交道，然后就要涉及到JS与原生OC�
     return YES;
 }
 ```
+
 > 注意：
 > 1. JS中的firstClick,在拦截到的url scheme全都被转化为小写。
+> 
 > 2.html中需要设置编码，否则中文参数可能会出现编码问题。
+> 
 > 3.JS用打开一个iFrame的方式替代直接用document.location的方式，以避免多次请求，被替换覆盖的问题。
 
 
 早期的JS与原生交互的开源库很多都是用得这种方式来实现的，例如：
 * PhoneGap(Cordova的前身)
 * [WebViewJavascriptBridge](https://github.com/marcuswestin/WebViewJavascriptBridge)。
+
 关于这种方式调用OC方法，唐巧早期有篇文章有过介绍：
 [关于UIWebView和PhoneGap的总结](http://blog.devtang.com/blog/2012/03/24/talk-about-uiwebview-and-phonegap/)
 
 ### 方式二
 在iOS 7之后，apple添加了一个新的库JavaScriptCore，用来做JS交互，因此JS与原生OC交互也变得简单了许多。
+
 首先导入JavaScriptCore库, 然后在OC中获取JS的上下文
+
 ```
 JSContext *context = [self.webView valueForKeyPath:@"documentView.webView.mainFrame.javaScriptContext"];
 ```
-再然后定义好JS需要调用的方法，例如JS要调用share方法：
-则可以在UIWebView加载url完成后，在其代理方法中添加要调用的share方法：
+再然后定义好JS需要调用的方法，例如JS要调用share方法，则可以在UIWebView加载url完成后，在其代理方法中添加要调用的share方法：
 ```
 - (void)webViewDidFinishLoad:(UIWebView *)webView
 {

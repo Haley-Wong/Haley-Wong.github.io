@@ -17,13 +17,15 @@ tags:
 * 6.当下盛行的React Native。
 
 今天就详细的介绍一下使用UIWebView拦截URL 的方式来实现JS与OC 的交互。
+
 为什么不使用第三方库或者RAC呢？
+
 因为就相互调用的接口使用的非常少啊，就那么三两个，完全没必要使用牛刀啊。
 
 ![](/img/blogs/js-native-1/img_01.gif)
 
 ## UIWebView 拦截URL
-我之前就使用的是UIWebView + 拦截URL 的方式实现的JS与OC 交互。
+我之前就使用的是UIWebView + 拦截URL 的方式实现的JS与OC 交互，
 原因是因为要兼容iOS 6。
 ### 1.创建UIWebView，并加载本地HTML。
 加载本地HTML的目的是便于自己写JS调用做测试，最终肯定还是加载网络HTML。
@@ -100,6 +102,7 @@ function setLocation(location) {
 
 ### 2.拦截 URL
 UIWebView 有一个代理方法，可以拦截到每一个链接的Request。return YES,webView 就会加载这个链接；return NO,webView 就不会加载这个连接。我们就在这个拦截的代理方法中处理自己的URL。
+
 这是我的示例代码：
 ```
 #pragma mark - UIWebViewDelegate
@@ -115,6 +118,7 @@ UIWebView 有一个代理方法，可以拦截到每一个链接的Request。ret
 }
 ```
 这里通过scheme，来拦截掉自定义的URL 就非常容易了，如果不同的方法使用不同的scheme，那么判断起来就非常的麻烦。
+
 然后，看看我的处理连接的方法：
 ```
 #pragma mark - private method
@@ -150,6 +154,7 @@ UIWebView 有一个代理方法，可以拦截到每一个链接的Request。ret
 }
 ```
 当然，有时候我们在JS中调用OC 方法的时候，也需要传参数到OC 中，怎么传呢？
+
 就像一个get 请求一样，把参数放在后面：
 ```
 function shareClick() {
@@ -157,7 +162,10 @@ function shareClick() {
 }
 ```
 那么如果获取到这些参数呢?
-所有的参数都在URL的query中，先通过`&`将字符串拆分，在通过`=`把参数拆分成key 和实际的值。下面有示例代码：
+
+所有的参数都在URL的query中，先通过`&`将字符串拆分，在通过`=`把参数拆分成key 和实际的值。
+
+下面有示例代码：
 ```
 - (void)share:(NSURL *)URL
 {
@@ -183,8 +191,11 @@ function shareClick() {
 }
 ```
 ### 3. OC调用JS方法
-关于将OC 执行结果返回给JS 需要注意的是：
-> 如果回调执行的JS 方法带参数，而参数不是字符串时，不要加`单引号`,否则可能导致调用JS 方法失败。比如我这样的：
+
+> 关于将OC 执行结果返回给JS 需要注意的是：
+> 如果回调执行的JS 方法带参数，而参数不是字符串时，不要加`单引号`,否则可能导致调用JS 方法失败。
+
+比如我这样的：
 ```
 NSData *jsonData = [NSJSONSerialization dataWithJSONObject:userProfile options:NSJSONWritingPrettyPrinted error:nil];
 NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];

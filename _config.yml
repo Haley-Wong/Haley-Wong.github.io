@@ -97,10 +97,10 @@ service-worker: true
 
 # Friends
 friends: [
-    # {
-        # title: "CosPotato's Blog",
-        # href: "https://blog.0x233.cn/"
-    # }
+    {
+        title: "phantomVK",
+        href: "https://phantomvk.github.io/"
+    }
 ]
 
 
