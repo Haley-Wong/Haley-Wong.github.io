@@ -449,7 +449,9 @@ function pokeNative() {
 ```
 这里的`evalJs`内部调用的其实是 `UIWebView` 的 `stringByEvaluatingJavaScriptFromString` 方法。
 
-## 6.如果你在使用Xcode 8时，觉得控制台里大量的打印很碍眼，可以这样设置来去掉。
+## 6. 补充
+
+如果你在使用Xcode 8时，觉得控制台里大量的打印很碍眼，可以这样设置来去掉。
 首先:
 
 ![](/img/blogs/js-native-8/img_12.jpg)

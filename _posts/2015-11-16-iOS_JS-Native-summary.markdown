@@ -5,7 +5,7 @@ date:       2015-11-16
 author:     "Haley-Wong"
 catalog:    true
 tags:
-    - JS与Native交互
+    - JS与iOS Native交互
 ---
 
 iOS开发免不了要与UIWebView打交道，然后就要涉及到JS与原生OC交互，今天总结一下JS与原生OC交互的两种方式。
