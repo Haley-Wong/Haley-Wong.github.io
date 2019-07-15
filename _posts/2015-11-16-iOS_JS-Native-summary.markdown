@@ -19,8 +19,8 @@ iOS开发免不了要与UIWebView打交道，然后就要涉及到JS与原生OC�
 <html>
     <header>
         <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<script type="text/javascript">
-            function showAlert(message){
+        <script type="text/javascript">
+            function showAlert(message){
                 alert(message);
             }
         
@@ -132,28 +132,28 @@ JSContext *context = [self.webView valueForKeyPath:@"documentView.webView.mainFr
 其中相对应的html部分如下：
 ```
 <html>
-    <header>
-        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-        <script type="text/javascript">
-        
-            function secondClick() {
-                share('分享的标题','分享的内容','图片地址');
-            }
-        
-        function showAlert(message){
-            alert(message);
-        }
-        
-        </script>
-    </header>
-    
-    <body>
-        <h2> 这里是第二种方式 </h2>
-        <br/>
-        <br/>
-        <button type="button" onclick="secondClick()">Click Me!</button>
-        
-    </body>
+    <header>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+        <script type="text/javascript">
+        
+            function secondClick() {
+                share('分享的标题','分享的内容','图片地址');
+            }
+        
+        	   function showAlert(message){
+                alert(message);
+        	   }
+        
+        </script>
+    </header>
+    
+    <body>
+        <h2> 这里是第二种方式 </h2>
+        <br/>
+        <br/>
+        <button type="button" onclick="secondClick()">Click Me!</button>
+        
+    </body>
 </html>
 ```
 JS部分确实要简单的多了。
@@ -195,19 +195,19 @@ function asyncAlert(content) {
 
 如果你看的还不尽兴，后面还有几篇JS相互调用的文章。
 
-[iOS下JS与OC互相调用（一）--UIWebView 拦截URL](https://juejin.im/post/5a952a345188257a7f1dd5ae)
+[iOS下JS与OC互相调用（一）--UIWebView 拦截URL](/2015/11/17/iOS_JS-Native-1/)
 
-[iOS下JS与OC互相调用（二）--WKWebView 拦截URL](https://juejin.im/post/5a952bf05188257a7f1dd5b9)
+[iOS下JS与OC互相调用（二）--WKWebView 拦截URL](/2015/11/18/iOS_JS-Native-2/)
 
-[iOS下JS与OC互相调用（三）--MessageHandler](https://juejin.im/post/5a952cd85188257a6e405b9d)
+[iOS下JS与OC互相调用（三）--MessageHandler](/2015/11/19/iOS_JS-Native-3/)
 
-[iOS下JS与OC互相调用（四）--JavaScriptCore](https://juejin.im/post/5a952d4d5188257a585113e9)
+[iOS下JS与OC互相调用（四）--JavaScriptCore](/2015/11/20/iOS_JS-Native-4/)
 
-[iOS下JS与OC互相调用（五）--UIWebView + WebViewJavascriptBridge](https://juejin.im/post/5a9530195188257a67179bd1)
+[iOS下JS与OC互相调用（五）--UIWebView + WebViewJavascriptBridge](/2015/11/21/iOS_JS-Native-5/)
 
-[iOS下JS与OC互相调用（六）--WKWebView + WebViewJavascriptBridge](https://juejin.im/post/5a9531a6f265da4e8f04d257)
+[iOS下JS与OC互相调用（六）--WKWebView + WebViewJavascriptBridge](/2015/11/22/iOS_JS-Native-6/)
 
-[iOS下JS与OC互相调用（七）--Cordova 基础](https://juejin.im/post/5a95321d6fb9a06356314692)
+[iOS下JS与OC互相调用（七）--Cordova 基础](/2015/11/23/iOS_JS-Native-7/)
 
-[iOS下JS与OC互相调用（八）--Cordova详解+实战](https://juejin.im/post/5a95326a5188257a7e3f5410)
+[iOS下JS与OC互相调用（八）--Cordova详解+实战](/2015/11/24/iOS_JS-Native-8/)
 
