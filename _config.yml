@@ -3,7 +3,7 @@ title: Haley-Wong
 SEOTitle: Haley-Wong Blog
 header-img: img/bg/home.webp
 email: wonghaley666@gmail.com
-description: "iOS开发者, 应用架构"
+description: "资深iOS工程师, 应用架构"
 keyword: "Haley-Wong, iOS技术博客,应用架构"
 # url: ""              # your host, for absolute URL
 # baseurl: ""          # for example, '/blog' if your blog hosted on 'host/blog'
@@ -13,7 +13,7 @@ keyword: "Haley-Wong, iOS技术博客,应用架构"
 # SNS settings
 RSS: false
 github_username:    Haley-Wong
-zhihu_username:     Haley-Wong
+#zhihu_username:     Haley-Wong
 # weibo_username:     Haley-Wong
 #twitter_username:   
 #facebook_username:  
