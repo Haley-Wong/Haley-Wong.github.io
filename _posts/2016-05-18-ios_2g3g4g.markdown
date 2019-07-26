@@ -1,0 +1,209 @@
+---
+layout:     post
+title:      "iOS 中如何判断当前是2G/3G/4G/5G/WiFi"
+date:       2016-05-18
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - WIFI 
+---
+
+5G 什么的，还得等苹果API更新啊，不过将来还是这个处理过程就是了。
+
+关于判断当前的网络环境是2G/3G/4G，这个问题以前经常看到，最近在一工程里看到了如果判断的API。而在撸WebRTC音视频通话的时候，看到了Demo中将SCNetworkReachability与其结合，当网络环境改变时，判断当前连接的是什么网络环境，写法欠佳（因为将其与WebRTC的其他逻辑柔和在了一个类）。其实只需要将官方的`Reachability`做一下改进即可。
+
+# 如何判断当前的网络环境
+我们可以利用`#import <CoreTelephony/CTTelephonyNetworkInfo.h>`框架下的一些API来判断当前的网络。
+
+先来看一下该框架下的一些常量定义：
+```
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyGPRS          __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyEdge          __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyWCDMA         __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyHSDPA         __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyHSUPA         __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyCDMA1x        __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyCDMAEVDORev0  __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyCDMAEVDORevA  __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyCDMAEVDORevB  __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyeHRPD         __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+CORETELEPHONY_EXTERN NSString * const CTRadioAccessTechnologyLTE           __OSX_AVAILABLE_STARTING(__MAC_NA,__IPHONE_7_0);
+```
+这不就是2G/3G/4G等网络环境么？我想等5G普及之后，苹果肯定也会加入代表5G的常量定义的。
+
+先看随手写的一个网络环境判断：
+```
+- (void)networkStatus
+{
+    NSArray *typeStrings2G = @[CTRadioAccessTechnologyEdge,
+                               CTRadioAccessTechnologyGPRS,
+                               CTRadioAccessTechnologyCDMA1x];
+    
+    NSArray *typeStrings3G = @[CTRadioAccessTechnologyHSDPA,
+                               CTRadioAccessTechnologyWCDMA,
+                               CTRadioAccessTechnologyHSUPA,
+                               CTRadioAccessTechnologyCDMAEVDORev0,
+                               CTRadioAccessTechnologyCDMAEVDORevA,
+                               CTRadioAccessTechnologyCDMAEVDORevB,
+                               CTRadioAccessTechnologyeHRPD];
+    
+    NSArray *typeStrings4G = @[CTRadioAccessTechnologyLTE];
+    
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 7.0) {
+        CTTelephonyNetworkInfo *teleInfo= [[CTTelephonyNetworkInfo alloc] init];
+        NSString *accessString = teleInfo.currentRadioAccessTechnology;
+        if ([typeStrings4G containsObject:accessString]) {
+            NSLog(@"4G网络");
+        } else if ([typeStrings3G containsObject:accessString]) {
+            NSLog(@"3G网络");
+        } else if ([typeStrings2G containsObject:accessString]) {
+            NSLog(@"2G网络");
+        } else {
+            NSLog(@"未知网络");
+        }
+    } else {
+        NSLog(@"未知网络");
+    }
+}
+```
+> 代码中的`currentRadioAccessTechnology`是iOS 7之后新加的API。
+
+# 改造Reachability
+在iOS应用中的使用场景肯定不是主动获取，应该是网络产生变化的时候，自动给出通知等，然后做一些相应的处理。下面我们就自己撸一个Reachability，然后给出当前的网络环境。
+
+我们都知道，使用Reachability时，如果网络变化，会给出一个通知，但是我们获取的网络状态只有WiFi/WWAN/NotReach几种。我们可以在Reachability返回的通知里，WWAN这种类型下，再做上面的网络判断即可。但是更优的做法就将判断放在Reachability中，在使用的时候直接返回不同的网络状态。
+
+由于最新的Reachability已经支持了IPV6，我也是在最新的Reachability上做了一些改进。
+大部分方法跟Reachability一样，我扩展了枚举类型，修改了网络状态判断。
+
+主要修改如下：
+```
+typedef NS_ENUM(NSUInteger, HLNetWorkStatus) {
+    HLNetWorkStatusNotReachable = 0,
+    HLNetWorkStatusUnknown = 1,
+    HLNetWorkStatusWWAN2G = 2,
+    HLNetWorkStatusWWAN3G = 3,
+    HLNetWorkStatusWWAN4G = 4,
+    
+    HLNetWorkStatusWiFi = 9,
+};
+```
+这里是网络类型判断的修改：
+```
+- (HLNetWorkStatus)networkStatusForFlags:(SCNetworkReachabilityFlags)flags
+{
+    if ((flags & kSCNetworkReachabilityFlagsReachable) == 0)
+    {
+        // The target host is not reachable.
+        return HLNetWorkStatusNotReachable;
+    }
+    
+    HLNetWorkStatus returnValue = HLNetWorkStatusNotReachable;
+    if ((flags & kSCNetworkReachabilityFlagsConnectionRequired) == 0)
+    {
+        /*
+         If the target host is reachable and no connection is required then we'll assume (for now) that you're on Wi-Fi...
+         */
+        returnValue = HLNetWorkStatusWiFi;
+    }
+    
+    if ((((flags & kSCNetworkReachabilityFlagsConnectionOnDemand ) != 0) ||
+         (flags & kSCNetworkReachabilityFlagsConnectionOnTraffic) != 0))
+    {
+        /*
+         ... and the connection is on-demand (or on-traffic) if the calling application is using the CFSocketStream or higher APIs...
+         */
+        
+        if ((flags & kSCNetworkReachabilityFlagsInterventionRequired) == 0)
+        {
+            /*
+             ... and no [user] intervention is needed...
+             */
+            returnValue = HLNetWorkStatusWiFi;
+        }
+    }
+    
+    if ((flags & kSCNetworkReachabilityFlagsIsWWAN) == kSCNetworkReachabilityFlagsIsWWAN)
+    {
+        /*
+         ... but WWAN connections are OK if the calling application is using the CFNetwork APIs.
+         */
+        NSArray *typeStrings2G = @[CTRadioAccessTechnologyEdge,
+                           CTRadioAccessTechnologyGPRS,
+                           CTRadioAccessTechnologyCDMA1x];
+        
+        NSArray *typeStrings3G = @[CTRadioAccessTechnologyHSDPA,
+                           CTRadioAccessTechnologyWCDMA,
+                           CTRadioAccessTechnologyHSUPA,
+                           CTRadioAccessTechnologyCDMAEVDORev0,
+                           CTRadioAccessTechnologyCDMAEVDORevA,
+                           CTRadioAccessTechnologyCDMAEVDORevB,
+                           CTRadioAccessTechnologyeHRPD];
+        
+        NSArray *typeStrings4G = @[CTRadioAccessTechnologyLTE];
+
+        if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 7.0) {
+            CTTelephonyNetworkInfo *teleInfo= [[CTTelephonyNetworkInfo alloc] init];
+            NSString *accessString = teleInfo.currentRadioAccessTechnology;
+            if ([typeStrings4G containsObject:accessString]) {
+                return HLNetWorkStatusWWAN4G;
+            } else if ([typeStrings3G containsObject:accessString]) {
+                return HLNetWorkStatusWWAN3G;
+            } else if ([typeStrings2G containsObject:accessString]) {
+                return HLNetWorkStatusWWAN2G;
+            } else {
+                return HLNetWorkStatusUnknown;
+            }
+        } else {
+            return HLNetWorkStatusUnknown;
+        }
+    }
+
+    return returnValue;
+}
+```
+
+# 改造后的Reachability用法
+为了便于使用，尽量按照Reachability的做法来处理，所以用法与之前没什么太大区别，就换了个通知而已。
+```
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reachabilityChanged:) name:kNetWorkReachabilityChangedNotification object:nil];
+    
+    HLNetWorkReachability *reachability = [HLNetWorkReachability reachabilityWithHostName:@"www.baidu.com"];
+    self.hostReachability = reachability;
+    [reachability startNotifier];
+
+// 通知处理
+- (void)reachabilityChanged:(NSNotification *)notification
+{
+    HLNetWorkReachability *curReach = [notification object];
+    HLNetWorkStatus netStatus = [curReach currentReachabilityStatus];
+    switch (netStatus) {
+        case HLNetWorkStatusNotReachable:
+            NSLog(@"网络不可用");
+            break;
+        case HLNetWorkStatusUnknown:
+            NSLog(@"未知网络");
+            break;
+        case HLNetWorkStatusWWAN2G:
+            NSLog(@"2G网络");
+            break;
+        case HLNetWorkStatusWWAN3G:
+            NSLog(@"3G网络");
+            break;
+        case HLNetWorkStatusWWAN4G:
+            NSLog(@"4G网络");
+            break;
+        case HLNetWorkStatusWiFi:
+            NSLog(@"WiFi");
+            break;
+            
+        default:
+            break;
+    }
+}
+```
+完整Demo地址：[HLNetWorkReachability](https://github.com/Haley-Wong/HLNetWorkReachability)。
+
+Have Fun!
+
+

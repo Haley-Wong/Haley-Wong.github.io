@@ -12,7 +12,7 @@ SDWebImage更新到如今这个版本，过程做了许多改进，性能已经�
 
 ## SDWebImage使用场景
 SDWebImage通过添加category的方式，为UIImageView、UIButton、MKAnnotationView 扩展设置网络图片的方法。使用方式基本类似，本文就拿UIImageView来举例：
-![123.png](http://upload-images.jianshu.io/upload_images/727768-8007e5acdf102d60.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240)
+![123.png](/img/blogs/sdwebimage/img_01.jpeg)
 而上面几个方法在实现时，都是调用的最后这个方法，只是设置了一些默认参数。
 
 例如：
