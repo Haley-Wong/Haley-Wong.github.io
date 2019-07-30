@@ -1,0 +1,370 @@
+---
+layout:     post
+title:      "iOS下WebRTC音视频通话（二）-局域网内音视频通话"
+date:       2016-06-16
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - WebRTC
+---
+
+这里是iOS 下WebRTC音视频通话开发的第二篇，在这一篇会利用一个局域网内音视频通话的例子介绍WebRTC中常用的API。
+
+如果你下载并编译完成之后，会看到一个iOS 版的WebRTC Demo。但是那个demo涉及到外网的通讯需要翻墙，而且还有对信令消息的封装理解起来非常的困难。
+
+但是，我将要写的这个demo去掉了STUN服务器、TURN服务器配置，以及信令的包装，基本上是用WebRTC进行音视频通话的最精简主干了，非常容易理解。
+
+# 准备
+因为这个Demo用到了我之前写的另外两个工程：
+
+[一个XMPP聊天的Demo](https://github.com/Haley-Wong/ChatDemo)
+
+[音视频通话的UI效果视图](https://github.com/Haley-Wong/RTCChatUI)
+
+如果你对在本地搭建OpenFire服务以及开发一个基于XMPP的聊天小程序感兴趣教程在这里：
+
+[XMPP系列（一）:OpenFire环境搭建](http://blog.csdn.net/u011619283/article/details/46901363)
+
+[XMPP系列(二)----用户注册和用户登录功能](http://blog.csdn.net/u011619283/article/details/46958323)
+
+[XMPP系列(三）---获取好友列表、添加好友](http://blog.csdn.net/u011619283/article/details/46993627)
+
+[XMPP系列(四）---发送和接收文字消息，获取历史消息功能](http://blog.csdn.net/u011619283/article/details/47031895)
+
+[XMPP系列(五）---文件传输](http://blog.csdn.net/u011619283/article/details/47113685)
+
+所以只需要下载上面两个工程，然后把一些控件合并下，然后配置好你的XMPP服务器的IP和端口号，就可以继续做音视频功能的开发了。
+
+# 开始着手开发
+首先，把WebRTC的静态库加进项目之后，需要添加相应的系统依赖库：
+
+![](/img/blogs/ios_webrtc2/img_01.png)
+
+然后，我在聊天介绍导航栏上加了两个按钮【视频】【语音】（主要是太懒，不想在输入框做更多功能）。如下图：
+
+![图1.png](/img/blogs/ios_webrtc2/img_02.png)
+
+再然后，为视频按钮添加点击事件，在这个点击事件里需要做几件事：
+
+* 1、弹出一个拨打的界面。
+* 2、播放拨打视频通话的声音。
+* 3、做WebRTC的配置。
+
+```
+- (void)videoAction
+{
+    NSLog(@"%s",__func__);
+    [self startCommunication:YES];
+}
+
+- (void)startCommunication:(BOOL)isVideo
+{
+    WebRTCClient *client = [WebRTCClient sharedInstance];
+    [client startEngine];
+    client.myJID = [HLIMCenter sharedInstance].xmppStream.myJID.full;
+    client.remoteJID = self.chatJID.full;
+    
+    [client showRTCViewByRemoteName:self.chatJID.full isVideo:isVideo isCaller:YES];
+
+}
+```
+
+所有与WebRTC相关的操作都先封装在WebRTCClient内，然后再根据功能做拆分，后面你可以拆分到不同的类里。
+
+下面开始介绍WebRTC的相关配置：
+
+```
+- (void)startEngine
+{
+  //如果你需要安全一点，用到SSL验证，那就加上这句话。
+    [RTCPeerConnectionFactory initializeSSL];
+    
+    //set RTCPeerConnection's constraints
+    self.peerConnectionFactory = [[RTCPeerConnectionFactory alloc] init];
+    NSArray *mandatoryConstraints = @[[[RTCPair alloc] initWithKey:@"OfferToReceiveAudio" value:@"true"],
+                                      [[RTCPair alloc] initWithKey:@"OfferToReceiveVideo" value:@"true"]
+                                      ];
+    NSArray *optionalConstraints = @[[[RTCPair alloc] initWithKey:@"DtlsSrtpKeyAgreement" value:@"false"]];
+    self.pcConstraints = [[RTCMediaConstraints alloc] initWithMandatoryConstraints:mandatoryConstraints optionalConstraints:optionalConstraints];
+    
+    //set SDP's Constraints in order to (offer/answer)
+    NSArray *sdpMandatoryConstraints = @[[[RTCPair alloc] initWithKey:@"OfferToReceiveAudio" value:@"true"],
+                                         [[RTCPair alloc] initWithKey:@"OfferToReceiveVideo" value:@"true"]
+                                         ];
+    self.sdpConstraints = [[RTCMediaConstraints alloc] initWithMandatoryConstraints:sdpMandatoryConstraints optionalConstraints:nil];
+    
+    //set RTCVideoSource's(localVideoSource) constraints
+    self.videoConstraints = [[RTCMediaConstraints alloc] initWithMandatoryConstraints:nil optionalConstraints:nil];
+}
+```
+
+上面的三个约束，只有pcConstraints是必须的，其他的都不是必须的。这些约束主要是控制音视频的采集，以及PeerConnection的设置。
+
+其他RTC相关的配置是在显示拨打界面后做的操作：
+
+```
+- (void)showRTCViewByRemoteName:(NSString *)remoteName isVideo:(BOOL)isVideo isCaller:(BOOL)isCaller
+{
+    // 1.显示视图
+    self.rtcView = [[RTCView alloc] initWithIsVideo:isVideo isCallee:!isCaller];
+    self.rtcView.nickName = remoteName;
+    self.rtcView.connectText = @"等待对方接听";
+    self.rtcView.netTipText = @"网络状况良好";
+    [self.rtcView show];
+    
+    // 2.播放声音
+    NSURL *audioURL;
+    if (isCaller) {
+        audioURL = [[NSBundle mainBundle] URLForResource:@"AVChat_waitingForAnswer.mp3" withExtension:nil];
+    } else {
+        audioURL = [[NSBundle mainBundle] URLForResource:@"AVChat_incoming.mp3" withExtension:nil];
+    }
+    _audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:audioURL error:nil];
+    _audioPlayer.numberOfLoops = -1;
+    [_audioPlayer prepareToPlay];
+    [_audioPlayer play];
+    
+    // 3.拨打时，禁止黑屏
+    [UIApplication sharedApplication].idleTimerDisabled = YES;
+    
+    // 4.监听系统电话
+    [self listenSystemCall];
+    
+    // 5.做RTC必要设置
+    if (isCaller) {
+        [self initRTCSetting];
+        // 如果是发起者，创建一个offer信令
+        [self.peerConnection createOfferWithDelegate:self constraints:self.sdpConstraints];
+    } else {
+        // 如果是接收者，就要处理信令信息，创建一个answer,但是设置和创建answer应该在点击接听后才开始
+        NSLog(@"如果是接收者，就要处理信令信息");
+        self.rtcView.connectText = isVideo ? @"视频通话":@"语音通话";
+    }
+}
+```
+上面的注释已经很明白了。主要内容在[initRTCSetting]中。
+
+* 1.已ICE服务器地址、pc约束、代理作为参数创建RTCPeerConnection对象。
+
+```
+self.peerConnection = [self.peerConnectionFactory peerConnectionWithICEServers:_ICEServers constraints:self.pcConstraints delegate:self];
+```
+
+* 2.创建本地多媒体流
+
+```
+RTCMediaStream *mediaStream = [self.peerConnectionFactory mediaStreamWithLabel:@"ARDAMS"];
+```
+
+* 3.为多媒体流添加音频轨迹
+
+```
+RTCAudioTrack *localAudioTrack = [self.peerConnectionFactory audioTrackWithID:@"ARDAMSa0"];
+ [mediaStream addAudioTrack:localAudioTrack];
+```
+
+音频的采集，已经封装在peerConnectionFactory工厂内。
+
+* 4.为多媒体流添加视频轨迹
+
+```
+RTCAVFoundationVideoSource *source = [[RTCAVFoundationVideoSource alloc] initWithFactory:self.peerConnectionFactory constraints:self.videoConstraints];
+RTCVideoTrack *localVideoTrack = [[RTCVideoTrack alloc] initWithFactory:self.peerConnectionFactory source:source trackId:@"AVAMSv0"];
+ [mediaStream addVideoTrack:localVideoTrack];
+```
+
+随着WebRTC的更新，API也被替换了很多，现在视频的采集多了一个新的类`RTCAVFoundationVideoSource`
+
+* 5.为视频流添加渲染视图
+
+```
+    RTCEAGLVideoView *localVideoView = [[RTCEAGLVideoView alloc] initWithFrame:self.rtcView.ownImageView.bounds];
+    localVideoView.transform = CGAffineTransformMakeScale(-1, 1);
+    localVideoView.delegate = self;
+    [self.rtcView.ownImageView addSubview:localVideoView];
+    self.localVideoView = localVideoView;
+    // 添加渲染视图
+    [self.localVideoTrack addRenderer:self.localVideoView];
+```
+
+`RTCEAGLVideoView`也是新增的一个视图类，我们可以直接将这个视图添加到某个视图上。
+
+* 6.将多媒体流绑定到peerConnection上
+
+```
+[self.peerConnection addStream:mediaStream];
+```
+
+至此发起方的RTC 设置完毕，只用在创建一个Offer，然后将Offer发送给对方。
+
+* 7.创建Offer
+
+```
+[self.peerConnection createOfferWithDelegate:self constraints:self.sdpConstraints];
+```
+
+* 8.在createSession的回调里，为peerConnection设置localDescription，并发送信令给对方—（其实在setSession的代理方法中发送信令更合适，但是那样就得保存sdp,所以这里偷了个懒）。
+
+```
+ - (void)peerConnection:(RTCPeerConnection *)peerConnection
+didCreateSessionDescription:(RTCSessionDescription *)sdp
+                 error:(NSError *)error
+{
+    if (error) {
+        NSLog(@"创建SessionDescription 失败");
+#warning 这里创建 创建SessionDescription 失败
+    } else {
+        NSLog(@"创建SessionDescription 成功");
+        // 这里将SessionDescription转换成H264的sdp,因为默认的是V8格式的视频。
+        RTCSessionDescription *sdpH264 = [self descriptionWithDescription:sdp videoFormat:@"H264"];
+        [self.peerConnection setLocalDescriptionWithDelegate:self sessionDescription:sdpH264];
+        NSDictionary *jsonDict = @{ @"type" : sdp.type, @"sdp" : sdp.description };
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:nil];
+        NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        // 将offer信令消息通过XMPP发送给对方
+        [[HLIMClient shareClient] sendSignalingMessage:jsonStr toUser:self.remoteJID];
+    }
+}
+```
+
+* 9.等待对方返回Answer信令消息，当接听后，发送Answer信令消息回来后，将其设置为peerConnection的RemoteDescription即可。然后RTC在处理完成后就开始像对方发送多媒体流啦。
+
+**补充:**
+ 
+RTCPeerConnection有很多个回调，他们分别是在不同的时机触发
+![图3.png](/img/blogs/ios_webrtc2/img_03.png)
+
+在为peerConnection添加RTCMediaStream之后就会触发下面这个代理方法：
+```
+- (void)peerConnectionOnRenegotiationNeeded:(RTCPeerConnection *)peerConnection
+```
+
+设置完LocalDescription之后，ICE框架才会开始去进行流数据传输，才会触发下面这几个方法
+
+```
+ - (void)peerConnection:(RTCPeerConnection *)peerConnection
+ signalingStateChanged:(RTCSignalingState)stateChanged
+
+ - (void)peerConnection:(RTCPeerConnection *)peerConnection
+   iceGatheringChanged:(RTCICEGatheringState)newState
+
+ - (void)peerConnection:(RTCPeerConnection *)peerConnection
+  iceConnectionChanged:(RTCICEConnectionState)newState
+
+```
+
+其中各种不同的状态的枚举值含义，在这篇文中里有英文解释：[中间部分有各种枚举值的解释](http://www.lxway.com/10564986.htm)
+
+而搜索到ICECandidate之后，会回调：
+
+```
+- (void)peerConnection:(RTCPeerConnection *)peerConnection
+       gotICECandidate:(RTCICECandidate *)candidate
+```
+
+我们需要在上面这个回调中，将候选信息发送给对方，然后对方讲接收到的候选添加到peerConnection中。关于Candidate，是对本端网络通信能力的一种描述。对于UDP/STUN协议，Candidate仅包含IP及端口信息，对于TURN，包含TURN server的IP，端口，以及用户名密码等。Candidate由本端代码生成，生成后通过信令发送给对端。对端会在本端所有的candidate中选择一个最好的建立与本端的连接。
+
+完整代码：
+```
+- (void)peerConnection:(RTCPeerConnection *)peerConnection
+       gotICECandidate:(RTCICECandidate *)candidate
+{
+    if (self.HaveSentCandidate) {
+        return;
+    }
+    NSLog(@"新的 Ice candidate 被发现.");
+    
+    NSDictionary *jsonDict = @{@"type":@"candidate",
+                               @"label":[NSNumber numberWithInteger:candidate.sdpMLineIndex],
+                               @"id":candidate.sdpMid,
+                               @"sdp":candidate.sdp
+                               };
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:nil];
+    if (jsonData.length > 0) {
+        NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        [[HLIMClient shareClient] sendSignalingMessage:jsonStr toUser:self.remoteJID];
+        self.HaveSentCandidate = YES;
+    }
+}
+```
+
+# 接收方
+
+接收方在收到发起方通过XMPP发送过来的信令（可能会有Offer信令，Candidate信令，bye信令）后，先将其保存到数组中,同时展示音视频通话界面，并播放声音。
+
+> 这里需要注意：要将收到的Offer信令消息插入到第一个，Offer信令消息必须先处理。
+
+当点击接听按钮时，初始化RTC的设置，即上面的[initRTCSetting]方法。然后处理之前保存的信令消息。
+```
+- (void)acceptAction
+{
+    [self.audioPlayer stop];
+    
+    [self initRTCSetting];
+    
+    for (NSDictionary *dict in self.messages) {
+        [self processMessageDict:dict];
+    }
+    
+    [self.messages removeAllObjects];
+}
+```
+
+如何处理之前的信令消息呢？
+
+**处理Offer信令消息：**
+
+将收到的Offer信令设置为peerConnection的RemoteDescription，并创建一个Answer信令发送给对方。
+
+**处理Candidate信令消息**
+
+将收到的信令消息包装成RTCICECandidate对象，然后添加到peerConnection上。
+
+具体代码：
+
+```
+- (void)processMessageDict:(NSDictionary *)dict
+{
+    NSString *type = dict[@"type"];
+    if ([type isEqualToString:@"offer"]) {
+        RTCSessionDescription *remoteSdp = [[RTCSessionDescription alloc] initWithType:type sdp:dict[@"sdp"]];
+        
+        [self.peerConnection setRemoteDescriptionWithDelegate:self sessionDescription:remoteSdp];
+        
+        [self.peerConnection createAnswerWithDelegate:self constraints:self.sdpConstraints];
+    } else if ([type isEqualToString:@"answer"]) {
+        RTCSessionDescription *remoteSdp = [[RTCSessionDescription alloc] initWithType:type sdp:dict[@"sdp"]];
+        
+        [self.peerConnection setRemoteDescriptionWithDelegate:self sessionDescription:remoteSdp];
+        
+    } else if ([type isEqualToString:@"candidate"]) {
+        NSString *mid = [dict objectForKey:@"id"];
+        NSNumber *sdpLineIndex = [dict objectForKey:@"label"];
+        NSString *sdp = [dict objectForKey:@"sdp"];
+        RTCICECandidate *candidate = [[RTCICECandidate alloc] initWithMid:mid index:sdpLineIndex.intValue sdp:sdp];
+
+        [self.peerConnection addICECandidate:candidate];
+    } else if ([type isEqualToString:@"bye"]) {
+
+        if (self.rtcView) {
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil];
+            NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonStr.length > 0) {
+                [[HLIMClient shareClient] sendSignalingMessage:jsonStr toUser:self.remoteJID];
+            }
+            
+            [self.rtcView dismiss];
+            
+            [self cleanCache];
+        }
+    }
+}
+```
+需要注意的是因为没有用到ICE穿墙，所以必须在同一个路由器下，否则可能无法进行点对点传输多媒体流。至此，局域网内音视频通话的小程序就完成了。
+
+示例工程地址：[局域网内WebRTC音视频通话](https://github.com/Haley-Wong/WebRTC_iOS/tree/master/LocalWebRTC)
+
+Demo中用到的WebRTC静态库已放到：[百度网盘](http://pan.baidu.com/s/1nvKpYRZ)
+
+Have Fun!
+

@@ -1,0 +1,386 @@
+---
+layout:     post
+title:      "iOS下WebRTC音视频通话（三）-音视频通话"
+date:       2016-06-20
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - WebRTC
+---
+
+前两篇文章记录了音视频通话的一些概念和一些流程，以及一个局域网内音视频通话的示例。
+今天以一个伪真实网络间的音视频通话示例，来分析WebRTC音视频通话的过程。
+
+上一篇因为是在相同路由内，所以不需要穿墙，两个客户端是可以直接传输多媒体流数据。用XMPP作为信令传输的通道也非常的简单。
+
+本篇会添加上STUN服务器和TURN服务器，让ICE框架的功能发挥出来，实现完整的音视频通话。但是因为两个客户端所处网络环境不同，需要将这两个客户端加入到同一个虚拟的网络中（即房间服务器），所以需要服务器端的支持，关于服务器端的开发，这里就不做描述了。
+
+# 过程的分析
+#### 发起方
+
+* 第一步，依然是视频按钮的点击事件，与局域网内音视频通话无异：
+
+```
+ - (void)startCommunication:(BOOL)isVideo
+{
+    WebRTCClient *client = [WebRTCClient sharedInstance];
+    client.myJID = [HLIMCenter sharedInstance].xmppStream.myJID.full;
+    client.remoteJID = self.chatJID.full;
+    
+    [client showRTCViewByRemoteName:self.chatJID.full isVideo:isVideo isCaller:YES];
+}
+```
+
+而在显示音视频通话视图的同时，需要做一系列的操作：
+
+* 1、播放拨打的声音；
+* 2、拨打的时候，禁止黑屏。
+* 3、监听系统来电。
+以上这些步骤，与局域网内的音视频通话时一样的。
+
+* 第二步，在房间服务器内创建一个房间，并加入房间。
+
+这一步，就需要服务器端人员，提供一个房间服务器，并处理创建房间和加入房间的逻辑。
+
+而客户端，则是随机生成一个房间号，然后向房间服务器发送一个请求，创建服务器，并把自己加入到房间内；而请求会返回房间号（即传过去的那个）、ClientId、initiator(是否是创建者)、之前的信令消息、服务器端的WebSocket地址等参数。如果该房间号已存在，那么直接加入到这个房间。所以将房间号发送给应答方后，应答方注册时，只会加入这个房间，并不会再创建新的房间。
+
+* 第三步，初始化WebRTC配置。这些配置中也有一些变化，在ICE服务器中添加了STUN、TURN服务器。
+首先是iCE服务器数组初始化时，就添加了STUN服务器。
+
+```
+instance.ICEServers = [NSMutableArray arrayWithObject:[instance defaultSTUNServer]];
+```
+
+而ICEServer的创建有一个类，RTCICEServer。
+
+```
+ - (RTCICEServer *)defaultSTUNServer {
+    NSURL *defaultSTUNServerURL = [NSURL URLWithString:RTCSTUNServerURL];
+    return [[RTCICEServer alloc] initWithURI:defaultSTUNServerURL
+                                    username:@""
+                                    password:@""];
+}
+```
+
+STUN服务器，你可以用google提供的`stun:stun.l.google.com:19302`,你也可以让服务器开发人员提供一个STUN服务器。
+
+而TURN服务器（转发服务器），虽然一般不添加也可以，但是还是最好提供几个座位备用。
+
+```
+/**
+ *  关于RTC 的设置
+ */
+- (void)initRTCSetting
+{
+    //添加 turn 服务器
+//    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:RTCTRUNServerURL]];
+//    [request addValue:@"Mozilla/5.0" forHTTPHeaderField:@"user-agent"];
+//    [request addValue:RTCRoomServerURL forHTTPHeaderField:@"origin"];
+//    [request setTimeoutInterval:5];
+//    [request setCachePolicy:NSURLRequestReloadIgnoringCacheData];
+//    
+//    NSURLSessionDataTask *turnTask = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+//        NSDictionary *dict = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:NULL];
+//        NSLog(@"返回的服务器：%@",dict);
+//        NSString *username = dict[@"username"];
+//        NSString *password = dict[@"password"];
+//        NSArray *uris = dict[@"uris"];
+//        
+//        for (NSString *uri in uris) {
+//            RTCICEServer *server = [[RTCICEServer alloc] initWithURI:[NSURL URLWithString:uri] username:username password:password];
+//            [_ICEServers addObject:server];
+//        }
+//        
+//    }];
+//    [turnTask resume];
+    
+    self.peerConnection = [self.peerConnectionFactory peerConnectionWithICEServers:_ICEServers constraints:self.pcConstraints delegate:self];
+    
+    //设置 local media stream
+    RTCMediaStream *mediaStream = [self.peerConnectionFactory mediaStreamWithLabel:@"ARDAMS"];
+    // 添加 local video track
+    RTCAVFoundationVideoSource *source = [[RTCAVFoundationVideoSource alloc] initWithFactory:self.peerConnectionFactory constraints:self.videoConstraints];
+    RTCVideoTrack *localVideoTrack = [[RTCVideoTrack alloc] initWithFactory:self.peerConnectionFactory source:source trackId:@"AVAMSv0"];
+    [mediaStream addVideoTrack:localVideoTrack];
+    self.localVideoTrack = localVideoTrack;
+    
+    // 添加 local audio track
+    RTCAudioTrack *localAudioTrack = [self.peerConnectionFactory audioTrackWithID:@"ARDAMSa0"];
+    [mediaStream addAudioTrack:localAudioTrack];
+    // 添加 mediaStream
+    [self.peerConnection addStream:mediaStream];
+    
+    RTCEAGLVideoView *localVideoView = [[RTCEAGLVideoView alloc] initWithFrame:self.rtcView.ownImageView.bounds];
+    localVideoView.transform = CGAffineTransformMakeScale(-1, 1);
+    localVideoView.delegate = self;
+    [self.rtcView.ownImageView addSubview:localVideoView];
+    self.localVideoView = localVideoView;
+    
+    [self.localVideoTrack addRenderer:self.localVideoView];
+    
+    RTCEAGLVideoView *remoteVideoView = [[RTCEAGLVideoView alloc] initWithFrame:self.rtcView.adverseImageView.bounds];
+    remoteVideoView.transform = CGAffineTransformMakeScale(-1, 1);
+    remoteVideoView.delegate = self;
+    [self.rtcView.adverseImageView addSubview:remoteVideoView];
+    self.remoteVideoView = remoteVideoView;
+}
+```
+
+* 第四步，创建一个Offer信令。
+
+```
+// 创建一个offer信令
+ [self.peerConnection createOfferWithDelegate:self constraints:self.sdpConstraints];
+```
+
+* 第五步，将房间号发送给应答方，并发送offer信令给对方。
+
+在创建Offer信令完成的回调中，如果创建成功，将房间号发送给应答方，并将offer的sdp发送给对方。
+
+```
+ - (void)peerConnection:(RTCPeerConnection *)peerConnection
+didCreateSessionDescription:(RTCSessionDescription *)sdp
+                 error:(NSError *)error
+{
+    if (error) {
+        NSLog(@"创建SessionDescription 失败");
+#warning 这里创建 创建SessionDescription 失败,创建失败应该隐藏拨打界面，并给予提示。
+    } else {
+        NSLog(@"创建SessionDescription 成功");
+        RTCSessionDescription *sdpH264 = [self descriptionWithDescription:sdp videoFormat:@"H264"];
+        [self.peerConnection setLocalDescriptionWithDelegate:self sessionDescription:sdpH264];
+        
+        if ([sdp.type isEqualToString:@"offer"]) {
+            NSDictionary *dict = @{@"roomId":self.roomId};
+            NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil];
+            NSString *message = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            
+            [[HLIMClient shareClient] sendSignalingMessage:message toUser:self.remoteJID];
+        }
+        
+        NSDictionary *jsonDict = @{ @"type" : sdp.type, @"sdp" : sdp.description };
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:nil];
+        NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        
+        [[HLIMClient shareClient] sendSignalingMessage:jsonStr toUser:self.remoteJID];
+    }
+}
+```
+
+* 第六步，WebRTC内部与STUN服务器，TURN服务器做交互。（这是隐藏的操作）
+主要体现在peerConnection的几个回调上：
+
+![回调方法.png](/img/blogs/ios_webrtc3/img_01.webp)
+
+以上基本回调方法的处理与上一篇基本一致，也就两个划线的回调方法有些变化。
+`-peerConnection:iceConnectionChanged`在监听到断开后，移除音视频通话的界面。
+
+关键代码：
+
+```
+ case RTCICEConnectionDisconnected:
+        {
+            NSLog(@"newState = RTCICEConnectionDisconnected");
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.rtcView dismiss];
+                
+                [self cleanCache];
+            });
+        }
+            break;
+```
+
+而`-peerConnection:gotICECandidate`,因为本端会生成所有网络接口对应不同协议的Candidate。 每一个Candidate实际上描述了和自己的通信方式。比如一个STUN类型的Candidate会包含本端在防火墙外的IP和端口类型。因为添加了STUN和TURN服务器，所以可能的通信方式也变多了，回调次数也会变多。
+
+* 第七步，当XMPP接收到对方返回的信令消息后，如果不是answer信令，则储存起来；如果是answer信令则先处理answer信令，然后再处理其他的信令。
+
+```
+ - (void)receiveSignalingMessage:(NSNotification *)notification
+{
+    NSDictionary *dict = [notification object];
+    [self handleSignalingMessage:dict];
+    
+    [self drainMessages];
+}
+
+ - (void)handleSignalingMessage:(NSDictionary *)dict
+{
+    NSString *type = dict[@"type"];
+    if ([type isEqualToString:@"offer"] || [type isEqualToString:@"answer"]) {
+        [self.messages insertObject:dict atIndex:0];
+        _hasReceivedSdp = YES;
+        
+    } else if ([type isEqualToString:@"candidate"]) {
+        
+        [self.messages addObject:dict];
+    } else if ([type isEqualToString:@"bye"]) {
+        [self processMessageDict:dict];
+    }
+}
+
+- (void)drainMessages
+{
+    if (!_peerConnection || !_hasReceivedSdp) {
+        return;
+    }
+    
+    for (NSDictionary *dict in self.messages) {
+        [self processMessageDict:dict];
+    }
+    
+    [self.messages removeAllObjects];
+}
+
+- (void)processMessageDict:(NSDictionary *)dict
+{
+    NSString *type = dict[@"type"];
+    if ([type isEqualToString:@"offer"]) {
+        RTCSessionDescription *remoteSdp = [[RTCSessionDescription alloc] initWithType:type sdp:dict[@"sdp"]];
+        
+        [self.peerConnection setRemoteDescriptionWithDelegate:self sessionDescription:remoteSdp];
+        
+        [self.peerConnection createAnswerWithDelegate:self constraints:self.sdpConstraints];
+    } else if ([type isEqualToString:@"answer"]) {
+        RTCSessionDescription *remoteSdp = [[RTCSessionDescription alloc] initWithType:type sdp:dict[@"sdp"]];
+        
+        [self.peerConnection setRemoteDescriptionWithDelegate:self sessionDescription:remoteSdp];
+        
+    } else if ([type isEqualToString:@"candidate"]) {
+        NSString *mid = [dict objectForKey:@"id"];
+        NSNumber *sdpLineIndex = [dict objectForKey:@"label"];
+        NSString *sdp = [dict objectForKey:@"sdp"];
+        RTCICECandidate *candidate = [[RTCICECandidate alloc] initWithMid:mid index:sdpLineIndex.intValue sdp:sdp];
+
+        [self.peerConnection addICECandidate:candidate];
+    } else if ([type isEqualToString:@"bye"]) {
+
+        if (self.rtcView) {
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:dict options:0 error:nil];
+            NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            if (jsonStr.length > 0) {
+                [[HLIMClient shareClient] sendSignalingMessage:jsonStr toUser:self.remoteJID];
+            }
+            
+            [self.rtcView dismiss];
+            
+            [self cleanCache];
+        }
+    }
+}
+```
+设置完answer信令之后，两方就可以点对点发送多媒体流数据了。
+
+#### 应答方
+第一步，在接收到发起方通过XMPP发送过来的房间号信息后，显示出接听界面，但是RTC的配置推迟到点击接听按钮时。
+
+第二步，注册并加入该房间，因为房间已经被发起方创建过，所以会直接加入房间。
+
+第三步，点击接听按钮时，停止声音的播放，然后做RTC的相关配置。
+
+```
+- (void)acceptAction
+{
+    [self.audioPlayer stop];
+    
+    [self initRTCSetting];
+    
+    [self drainMessages];
+}
+```
+
+第四步，处理信令消息。
+
+在处理信令小时前，判断是否已经收到offer信令。如果收到offer信令之后，才处理信令消息，现将offer的sdp设置为peerConnection的远程sdp。同时创建一个answer信令，并将answer信令发送给对端。
+
+在两端都已经设置好远程和本地sdp后，就会开始点对点的发送多媒体流数据了。
+
+# 补充
+在WebRTC的第一篇，就讲过信令的传输可以用多种方式，除了XMPP,其他协议方式也是可以用来传输信令的，比如WebSocket。**但是房间号不属于信令消息。**
+
+怎么使用WebSocket来传输信令消息呢？
+
+在注册房间并加入成功后，会返回服务器端WebSocket的地址。这时候创建一个WebSocket，然后用房间号和clientId注册，其实就是将房间号和clientId包装后，通过WebSocket发送给服务器。
+
+关键代码：
+```
+ NSURL *webSocketURL = [NSURL URLWithString:dict[kARDJoinWebSocketURLKey]];
+ _webSocket = [[SRWebSocket alloc] initWithURL:webSocketURL];
+_webSocket.delegate = self;
+[_webSocket open];
+            
+[self registerForRoomId:self.roomId clientId:self.clientId];
+```
+
+而用房间号和clientId注册的关键代码：
+```
+NSDictionary *registerMessage = @{
+                                      @"cmd": @"register",
+                                      @"roomid" : _roomId,
+                                      @"clientid" : _clientId,
+                                      };
+NSData *message = [NSJSONSerialization dataWithJSONObject:registerMessage
+                                    options:NSJSONWritingPrettyPrinted
+                                      error:nil];
+NSString *messageString = [[NSString alloc] initWithData:message encoding:NSUTF8StringEncoding];
+NSLog(@"Registering on WSS for rid:%@ cid:%@", _roomId, _clientId);
+// Registration can fail if server rejects it. For example, if the room is full.
+[_webSocket send:messageString];
+```
+
+发送信令的关键代码范例：
+
+```
+NSDictionary *jsonDict = @{ @"type" : sdp.type, @"sdp" : sdp.description };
+NSData *jsonData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:nil];
+NSString *jsonStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+NSDictionary *messageDict = @{@"cmd": @"send", @"msg": jsonStr};
+NSData *messageJSONObject = [NSJSONSerialization dataWithJSONObject:messageDict
+                                        options:NSJSONWritingPrettyPrinted
+                                          error:nil];
+NSString *messageString = [[NSString alloc] initWithData:messageJSONObject
+                              encoding:NSUTF8StringEncoding];
+[_webSocket send:messageString];
+```
+
+WebSocket的代理方法会在socket打开成功，打开失败，关闭，以及收到消息时回调。
+
+这里主要将一下收到消息，收到的消息就是信令消息，而信令消息有多种，candidate消息就需要存起来，而offer、answer、bye消息就需要立刻处理。
+
+如下是接收到信令消息的处理范例：
+```
+- (void)webSocket:(SRWebSocket *)webSocket didReceiveMessage:(id)message {
+    NSString *messageString = message;
+    NSData *messageData = [messageString dataUsingEncoding:NSUTF8StringEncoding];
+    id jsonObject = [NSJSONSerialization JSONObjectWithData:messageData
+                                                    options:0
+                                                      error:nil];
+    if (![jsonObject isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"Unexpected message: %@", jsonObject);
+        return;
+    }
+    NSDictionary *wssMessage = jsonObject;
+    NSLog(@"WebSocket 接收到信息:%@",wssMessage);
+    NSString *errorString = wssMessage[@"error"];
+    if (errorString.length) {
+        NSLog(@"WebSocket收到错误信息");
+        return;
+    }
+    
+    NSString *msg = wssMessage[@"msg"];
+    NSData *data = [msg dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *sinalingMsg = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    [self handleSignalingMessage:sinalingMsg];
+    
+    [self drainMessages];
+}
+```
+用XMPP传输信令的示例工程地址：[RemoteXMPPRTC](https://github.com/Haley-Wong/WebRTC_iOS/tree/master/RemoteXMPPRTC)
+
+用WebSocket传输信令的示例工程地址：[RemoteWebRTC](https://github.com/Haley-Wong/WebRTC_iOS/tree/master/RemoteWebRTC)
+
+工程中用到的WebRTC静态库已放到：[百度网盘](http://pan.baidu.com/s/1nvKpYRZ)
+
+关于WebRTC的介绍就到这里了，Have Fun！
+
+
