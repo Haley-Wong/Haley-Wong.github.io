@@ -1,0 +1,291 @@
+---
+layout:     post
+title:      "GCD API 理解 （一）"
+date:       2016-07-08
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - GCD
+---
+
+## 资料先行
+
+[GCD 深入理解：第一部分](https://github.com/nixzhu/dev-blog/blob/master/2014-04-19-grand-central-dispatch-in-depth-part-1.md)
+
+[GCD 深入理解：第二部分](https://github.com/nixzhu/dev-blog/blob/master/2014-05-14-grand-central-dispatch-in-depth-part-2.md)
+
+以上两篇文章是关于GCD讲的比较好的文章，翻译自[raywenderlich](https://www.raywenderlich.com/)，该网站有很多关于iOS 开发的优秀文章。
+
+## 引子
+iOS 开发中有三大进阶性的技术点，分别是GCD、runtime 和runloop。其中GCD用的最多，runtime也有不少使用场景，runloop在系统的API里体现的比较多，项目里实际使用比较少。
+
+一直都想就这三个技术点做一些总结，没事的时候可以回来复习巩固一下，可是记录了很多要写的点，但是文章却是一拖再拖。本文就记录GCD的一些API自己的理解和用法等，遇到新的API也会补充进来。
+
+## 扩展
+pthread 也是C 语言API(pthread现在已经基本看不到有使用的了)，而NSThread 是Objective-C对pthread的封装；
+
+虽然GCD也是C语言API，但是非常容易使用，而NSOpretion是Objective-C对GCD的进一步封装。
+
+这是iOS 中几种多线程技术的关系。
+
+## 介绍
+GCD（Grand Central Dispatch)是OS X与iOS 开发中一种多核开发的解决方案。GCD是在`libdispatch`框架内，而该框架是iOS 应用默认的已经包含进去了。
+
+苹果是在 OS X 10.6 和 iOS 4 中引入了 GCD，它是低层级的C语言 API。使用GCD，它能够让开发者更加方便、更加容易得使用多核CPU。而且我们开发者不需要再直接跟线程打交道了，只需要向队列中添加代码块即可，而GCD 在后端其实是管理着一个线程池。GCD 不仅决定着我们的代码块将在哪个线程被执行，它还根据可用的系统资源对这些线程进行管理。通过集中的管理线程，来缓解大量线程被创建的问题。
+`妈妈再也不用担心我们自己来处理线程的创建和销毁了`
+## 基本知识
+### 1.串行队列和并发队列
+串行队列就是每次只有一个任务执行，当一个任务执行完毕后，才会执行下一个任务。
+而并发队列就是同时有多个任务在执行，同时执行的任务哪个先执行完，我们根本不知道。
+iOS 中的串行队列有两种：主队列(`dispatch_get_main_queue()`)、通过`dispatch_queue_create`创建的串行队列
+#### 1.1创建串行队列
+主队列是系统为我们的应用创建的，我们是没办法创建一个新的主队列的。
+以下是一个创建串行队列的例子。
+```
+dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+```
+其中第一个参数队列的label标记，第二个可以控制创建出来的队列是串行队列还是并发队列。
+`DISPATCH_QUEUE_SERIAL`其实就是一个宏，实际上是NULL。
+这也就是为什么，我们经常会看到别人是这样创建串行队列的：
+```
+dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", NULL);
+```
+#### 1.2创建并发队列
+第一种创建并发队列的方式就是将上面方法的第二个参数修改为并发参数：
+```
+dispatch_queue_t concurrent_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_CONCURRENT);
+```
+第二种方式创建全局并发队列：
+```
+dispatch_queue_t concurrent_queue =  dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+```
+该方法第一个参数是创建的queue的级别。有四个宏，分别对应不同的级别：
+```
+#define DISPATCH_QUEUE_PRIORITY_HIGH 2
+#define DISPATCH_QUEUE_PRIORITY_DEFAULT 0
+#define DISPATCH_QUEUE_PRIORITY_LOW (-2)
+#define DISPATCH_QUEUE_PRIORITY_BACKGROUND INT16_MIN
+```
+第二个参数，是苹果留作以后备用的，一般默认就填0就OK了。
+因为DISPATCH_QUEUE_PRIORITY_DEFAULT其实就是等于0，所以我们常常会看到：
+```
+dispatch_queue_t concurrent_queue =  dispatch_get_global_queue(0, 0);
+```
+### 2 同步和异步
+同步函数就是等待任务的执行，等任务执行完成后再返回。所以同步就意味着在当前线程中执行任务，并不会开启新的线程，不管是串行队列还是并发队列。
+```
+dispatch_sync(concurrent_queue, ^{ 
+      NSLog(@"打印%d----线程:%@", i,[NSThread currentThread]); //在当前线程中执行
+});
+```
+而异步函数就不会等待任务的执行完成，它会立即返回。所以异步也就意味着会开启一个新的线程，所以并不会阻塞当前的线程。
+```
+dispatch_async(concurrent_queue, ^{ 
+  NSLog(@"打印%d----线程:%@", i,[NSThread currentThread]);  //在新的线程中执行
+});
+```
+### 3 总结
+GCD的多线程使用都是同步/异步 与串行队列/并发队列组合使用的。
+
+|  | 同步 | 异步 |
+|:---------:|:--------:|:---------:|
+| 串行队列 | 不创建新线程，顺序执行 | 创建新线程，顺序执行 |
+| 并发队列 | 不创建新线程，顺序执行 | 创建新线程，随机执行(不知哪个任务先执行完) |
+
+串行队列无论是同步的执行任务，还是异步的执行任务，任务都是顺序执行的。
+
+**串行队列同步任务：**
+
+```
+    dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_sync(serial_queue, ^{
+            NSLog(@"串行%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_sync(serial_queue, ^{
+        NSLog(@"串行最后----线程:%@",[NSThread currentThread]);
+    });
+// 打印结果：
+2016-07-08 16:15:13.421 PractiseProject[9528:187413] 串行0----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+2016-07-08 16:15:13.421 PractiseProject[9528:187413] 串行1----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+2016-07-08 16:15:13.422 PractiseProject[9528:187413] 串行2----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+2016-07-08 16:15:13.422 PractiseProject[9528:187413] 串行3----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+2016-07-08 16:15:13.422 PractiseProject[9528:187413] 串行4----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+2016-07-08 16:15:13.422 PractiseProject[9528:187413] 串行最后----线程:<NSThread: 0x7f93da408fe0>{number = 1, name = main}
+```
+
+**串行队列异步任务:**
+
+```
+    dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_async(serial_queue, ^{
+            NSLog(@"串行%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_async(serial_queue, ^{
+        NSLog(@"串行最后----线程:%@",[NSThread currentThread]);
+    });
+// 打印结果：
+2016-07-08 16:16:34.852 PractiseProject[9545:188432] 串行0----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+2016-07-08 16:16:34.852 PractiseProject[9545:188432] 串行1----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+2016-07-08 16:16:34.853 PractiseProject[9545:188432] 串行2----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+2016-07-08 16:16:34.853 PractiseProject[9545:188432] 串行3----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+2016-07-08 16:16:34.853 PractiseProject[9545:188432] 串行4----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+2016-07-08 16:16:34.853 PractiseProject[9545:188432] 串行最后----线程:<NSThread: 0x7fc499c09870>{number = 2, name = (null)}
+```
+
+**串行队列混合任务**
+
+即使串行队列中有同步任务和异步任务，也还是按照添加任务的顺序执行,只不过同步任务在当前线程执行，异步任务在新线程中执行:
+```
+    dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_sync(serial_queue, ^{
+            NSLog(@"串行%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_async(serial_queue, ^{
+        NSLog(@"串行最后----线程:%@",[NSThread currentThread]);
+    });
+// 打印结果：
+2016-07-08 16:21:34.545 PractiseProject[9588:190084] 串行0----线程:<NSThread: 0x7fb283609b30>{number = 1, name = main}
+2016-07-08 16:21:34.545 PractiseProject[9588:190084] 串行1----线程:<NSThread: 0x7fb283609b30>{number = 1, name = main}
+2016-07-08 16:21:34.545 PractiseProject[9588:190084] 串行2----线程:<NSThread: 0x7fb283609b30>{number = 1, name = main}
+2016-07-08 16:21:34.545 PractiseProject[9588:190084] 串行3----线程:<NSThread: 0x7fb283609b30>{number = 1, name = main}
+2016-07-08 16:21:34.546 PractiseProject[9588:190084] 串行4----线程:<NSThread: 0x7fb283609b30>{number = 1, name = main}
+2016-07-08 16:21:34.546 PractiseProject[9588:190120] 串行最后----线程:<NSThread: 0x7fb28362ee30>{number = 2, name = (null)}
+```
+
+**并发队列同步任务**
+
+因为不会开启新的线程，所以就在当前线程中执行，只有一条线程，因此只能顺序执行了。
+```
+    dispatch_queue_t concurrent_queue =  dispatch_get_global_queue(0, 0);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_sync(concurrent_queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_sync(concurrent_queue, ^{
+        NSLog(@"并发最后----线程:%@",[NSThread currentThread]);
+    });
+//打印结果:
+2016-07-08 16:26:44.264 PractiseProject[9671:193541] 并发0----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+2016-07-08 16:26:44.264 PractiseProject[9671:193541] 并发1----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+2016-07-08 16:26:44.265 PractiseProject[9671:193541] 并发2----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+2016-07-08 16:26:44.265 PractiseProject[9671:193541] 并发3----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+2016-07-08 16:26:44.265 PractiseProject[9671:193541] 并发4----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+2016-07-08 16:26:44.265 PractiseProject[9671:193541] 并发最后----线程:<NSThread: 0x7f905a404a00>{number = 1, name = main}
+```
+
+**并发队列异步任务**
+
+因为异步任务会开启新的线程，所以哪个任务先执行完毕，是不知道的。相同的示例代码多次运行，任务执行完成的顺序是不一样的。这里也可以看出一个GCD的优点，它会复用之前使用过的闲置的线程。
+```
+    dispatch_queue_t concurrent_queue =  dispatch_get_global_queue(0, 0);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_async(concurrent_queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_async(concurrent_queue, ^{
+        NSLog(@"并发最后----线程:%@",[NSThread currentThread]);
+    });
+// 打印结果:
+2016-07-08 16:29:03.522 PractiseProject[9696:194688] 并发1----线程:<NSThread: 0x7f8020c2bee0>{number = 4, name = (null)}
+2016-07-08 16:29:03.522 PractiseProject[9696:194694] 并发0----线程:<NSThread: 0x7f8020d1ec90>{number = 3, name = (null)}
+2016-07-08 16:29:03.522 PractiseProject[9696:194703] 并发3----线程:<NSThread: 0x7f8020e153e0>{number = 6, name = (null)}
+2016-07-08 16:29:03.522 PractiseProject[9696:194693] 并发2----线程:<NSThread: 0x7f8020c2bf20>{number = 5, name = (null)}
+2016-07-08 16:29:03.523 PractiseProject[9696:194688] 并发4----线程:<NSThread: 0x7f8020c2bee0>{number = 4, name = (null)}
+2016-07-08 16:29:03.523 PractiseProject[9696:194694] 并发最后----线程:<NSThread: 0x7f8020d1ec90>{number = 3, name = (null)}
+```
+
+**并发队列混合任务**
+
+可以确定的是如果异步任务添加在同步任务后面，则一定会等同步任务执行完毕后，才会执行异步任务；如果异步任务在同步任务前添加，则异步任务什么时候执行完毕也是未知的，但是多个同步任务一定是顺序执行的。
+```
+    dispatch_queue_t concurrent_queue =  dispatch_get_global_queue(0, 0);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_sync(concurrent_queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+    dispatch_async(concurrent_queue, ^{
+        NSLog(@"并发最后----线程:%@",[NSThread currentThread]);
+    });
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_sync(concurrent_queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+        });
+    }
+// 打印结果（多次运行打印结果并不相同）
+2016-07-08 16:38:56.273 PractiseProject[9805:199354] 并发0----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.273 PractiseProject[9805:199354] 并发1----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.273 PractiseProject[9805:199354] 并发2----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.273 PractiseProject[9805:199354] 并发3----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.273 PractiseProject[9805:199354] 并发4----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.274 PractiseProject[9805:199354] 并发0----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.274 PractiseProject[9805:199354] 并发1----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.274 PractiseProject[9805:199354] 并发2----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.274 PractiseProject[9805:199470] 并发最后----线程:<NSThread: 0x7f943362ffc0>{number = 3, name = (null)}
+2016-07-08 16:38:56.274 PractiseProject[9805:199354] 并发3----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+2016-07-08 16:38:56.274 PractiseProject[9805:199354] 并发4----线程:<NSThread: 0x7f9433408d40>{number = 1, name = main}
+```
+## 注意事项
+利用同步/异步任务 和串行队列/并发队列时，需要注意一些情况防止发生死锁。
+
+**情形一**
+
+在主线程中调度主队列完成一个同步任务，会发生死锁。
+```
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    // Do any additional setup after loading the view, typically from a nib.
+    self.view.backgroundColor = [UIColor orangeColor];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        NSLog(@"串行----线程:%@",[NSThread currentThread]);
+    });
+}
+```
+如上代码，界面永远不会加载出来，里面的NSLog永远也不会执行。原因是ViewDidLoad是在主队列的主线程中执行，执行到dispatch_sync 时会阻塞住，等待dispatch_sync中的打印任务执行完毕。而dispatch_sync又会等viewDidLoad执行完毕，再开始执行，因此就互相等待发生死锁。
+
+**情形二**
+
+在串行队列的同步任务中再执行同步任务，会发生死锁。
+```
+    dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+    dispatch_sync(serial_queue, ^{
+        NSLog(@"串行1----线程:%@",[NSThread currentThread]);
+        dispatch_sync(serial_queue, ^{
+            NSLog(@"串行2----线程:%@",[NSThread currentThread]);
+        });
+    });
+```
+上面示例中的`NSLog(@"串行1----线程:%@",[NSThread currentThread]);`会打印，
+但是`NSLog(@"串行2----线程:%@",[NSThread currentThread]);`永远也不会执行。
+
+因为串行队列一次只能执行一个任务，执行完毕返回后，才会执行下一个任务，而外层任务的完成需要等待内层任务的结束，而内层任务的开始需要等外层任务结束。
+
+其实情形一是情形二的一种特殊情况。
+
+**情形三**
+
+在串行队列的异步任务中再嵌套执行同步任务，也会发生死锁。
+```
+    dispatch_queue_t serial_queue = dispatch_queue_create("com.haley.com", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(serial_queue, ^{
+        NSLog(@"串行异步----线程:%@",[NSThread currentThread]);
+        dispatch_sync(serial_queue, ^{
+            NSLog(@"串行2----线程:%@",[NSThread currentThread]);
+        });
+        [NSThread sleepForTimeInterval:2.0];
+    });
+```
+同样的，由于串行队列一次只能执行一个任务，任务结束后，才能执行下一个任务。
+
+所以异步任务的结束需要等里面同步任务结束，而里面同步任务的开始需要等外面异步任务结束，所以就相互等待，发生死锁了。
+
+第一篇就到这里了，下一篇记录GCD的其他API。Have Fun!
+

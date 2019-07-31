@@ -1,0 +1,302 @@
+---
+layout:     post
+title:      "GCD API记录（二）"
+date:       2016-07-11
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - GCD
+---
+
+## 前言
+这是关于GCD的第二篇文章，GCD的API有100多个，通过快捷键Option + 单击，可以在Reference中的`Grand Central Dispatch (GCD) Reference`中看到。除了上篇文章介绍的几个外，其他用到的API就在这篇文章里记录。
+
+## API 汇总记录
+### 1.dispatch_once
+`Execute a block once and only once.` 执行一个block一次，且仅执行一次。
+利用这个API，我们可以很方便的写单例。
+
+```
+static HLTestObject *instance = nil;
++ (instancetype)sharedInstance{ 
+    static dispatch_once_t onceToken; 
+    dispatch_once(&onceToken, ^{ 
+        instance = [[[self class] alloc] init]; 
+    }); 
+    return instance;
+}
+```
+> 需要注意的是instance 和onceToken一定要保证是全局变量，用static修饰是最好的方案。
+
+完整的关于单例的写法和注意事项可以看这里[iOS中的单例你用对了么？](http://www.jianshu.com/p/1e5775163a69)
+
+### 2.dispatch_after
+`Schedule a block for execution on a given queue at a specified time`
+在指定的queue上特殊的时间执行某个block片段
+关于dispatch_time，第一个参数通常使用`DISPATCH_TIME_NOW`，它是一个表示
+dispatch_time_t 的宏，表示从现在开始算起，第二个参数是第一个参数之后经历的时长。而我们通常用的`NSEC_PER_SEC`也是一个宏，还有其他的宏:
+```
+#define NSEC_PER_SEC 1000000000ull  //每秒有多少纳秒
+#define NSEC_PER_MSEC 1000000ull     //每毫秒有多少纳秒
+#define USEC_PER_SEC 1000000ull        // 每秒有多少微秒
+#define NSEC_PER_USEC 1000ull           // 每微秒有多少纳秒
+```
+因为1秒钟有NSEC_PER_SEC(也即1000000000)纳秒，所以NSEC_PER_SEC其实就相当于1秒，那么两秒就是2 * NSEC_PER_SEC；
+
+**同理**
+
+NSEC_PER_MSEC就相当于是1毫秒，那么2秒钟，就应该是2000 * NSEC_PER_MSEC；
+
+USEC_PER_SEC也相当于1毫秒，2秒钟就是2000 * USEC_PER_SEC；
+
+NSEC_PER_USEC相当于 1微妙，所以要表示1秒钟就是1000000 * NSEC_PER_USEC。
+
+所以1秒后执行某段代码可以这样写：
+
+```
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"哈哈");
+    });
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"嘿嘿");
+    });
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000 * USEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"嗯嗯");
+    });
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1000000 * NSEC_PER_USEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"呃呃");
+    });
+```
+这个API的作用与下面这个方法类似:
+```
+[self performSelector:@selector(testClick:) withObject:nil afterDelay:2.0];
+```
+### 3.dispatch_group
+关于dispatch_group的API有好几个，相关API的使用场景是：在多个`异步任务`全部执行完毕后，执行某个任务。如果用`同步任务`或`串行队列`，就没有意义了，要谨记。
+
+这里有两种实现方式：
+
+**方式一**
+
+利用`dispatch_group_async`和`dispatch_group_notify`配合，关键代码：
+```
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_queue_t queue = dispatch_get_global_queue(0, 0);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_group_async(group, queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+            [NSThread sleepForTimeInterval:i];
+        });
+    }
+    dispatch_group_notify(group, queue, ^{
+        NSLog(@"dispatch_group_notify---%@",[NSThread currentThread]);
+    });
+// 打印结果：
+2016-07-08 18:00:22.795 PractiseProject[10437:231800] 并发0----线程:<NSThread: 0x7f8eb1406280>{number = 2, name = (null)}
+2016-07-08 18:00:22.795 PractiseProject[10437:231815] 并发1----线程:<NSThread: 0x7f8eb16177b0>{number = 3, name = (null)}
+2016-07-08 18:00:22.795 PractiseProject[10437:231821] 并发3----线程:<NSThread: 0x7f8eb17adff0>{number = 4, name = (null)}
+2016-07-08 18:00:22.795 PractiseProject[10437:231800] 并发4----线程:<NSThread: 0x7f8eb1406280>{number = 2, name = (null)}
+2016-07-08 18:00:22.795 PractiseProject[10437:231807] 并发2----线程:<NSThread: 0x7f8eb15029c0>{number = 5, name = (null)}
+2016-07-08 18:00:26.799 PractiseProject[10437:231821] dispatch_group_notify---<NSThread: 0x7f8eb17adff0>{number = 4, name = (null)}
+```
+
+**方式二**
+
+利用`dispatch_group_enter` 、`dispatch_group_leave`和`dispatch_group_notify`配合，其中需要注意的是有`dispatch_group_enter`就必定有一个`dispatch_group_leave`与之对应，否则可能会出现令你意想不到的崩溃。
+
+关键代码：
+```
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_queue_t queue = dispatch_get_global_queue(0, 0);
+    for (int i = 0 ; i < 5; i++) {
+        dispatch_group_enter(group);
+        dispatch_async(queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+            [NSThread sleepForTimeInterval:i];
+            dispatch_group_leave(group);
+        });
+    }
+    dispatch_group_notify(group, queue, ^{
+        NSLog(@"dispatch_group_notify---%@",[NSThread currentThread]);
+    });
+
+// 打印结果:
+2016-07-11 10:57:56.697 PractiseProject[1859:76390] 并行1----线程:<NSThread: 0x7ff71ae0add0>{number = 2, name = (null)}
+2016-07-11 10:57:56.697 PractiseProject[1859:76421] 并行2----线程:<NSThread: 0x7ff71af08db0>{number = 3, name = (null)}
+2016-07-11 10:57:56.697 PractiseProject[1859:76399] 并行0----线程:<NSThread: 0x7ff71ae087a0>{number = 5, name = (null)}
+2016-07-11 10:57:56.697 PractiseProject[1859:76436] 并行3----线程:<NSThread: 0x7ff71ae0c0f0>{number = 4, name = (null)}
+2016-07-11 10:57:56.697 PractiseProject[1859:76437] 并行4----线程:<NSThread: 0x7ff71ae03370>{number = 6, name = (null)}
+2016-07-11 10:58:00.702 PractiseProject[1859:76436] dispatch_group_notify---<NSThread: 0x7ff71ae0c0f0>{number = 4, name = (null)}
+```
+### 4.dispatch_barrier
+dispatch_barrier分为同步`dispatch_barrier_sync`和异步`dispatch_barrier_async`两种情况。dispatch_barrier的功能其实跟上面**标题3**的场景比较类似，它可以保证在dispatch_barrier前提交的任务执行完后，再执行dispatch_barrier中的任务，等dispatch_barrier中的任务执行完后，才继续执行在dispatch_barrier之后提交的任务。
+
+##### 4.1 dispatch_barrier_async
+首先，介绍一下异步`dispatch_barrier_async`，它会在新线程中执行任务，在苹果官方的描述中是这么写的：
+
+![11.png](http://upload-images.jianshu.io/upload_images/727768-eed2580cd03641a4.png?imageMogr2/auto-orient/strip%7CimageView2/2/w/1240)
+
+大致意思是：如果我们用`dispatch_queue_create`创建的并发队列上，使用`dispatch_barrier_async`,那么在`dispatch_barrier_async`中的任务会等在它之前提交的任务全部执行完(**之前的几个任务哪个先执行完依然是不确定的**)后再执行，而在它之后提交的任务，会等`dispatch_barrier_async`中的任务执行完之后，才会开始执行。但是如果使用串行队列或者`dispatch_get_global_queue`创建的并发队列，则`dispatch_barrier_async`的功能就类似`dispatch_async`，可以将`dispatch_barrier_async`直接替换成`dispatch_async`，效果一样。
+
+一个使用`dispatch_barrier_async`的示例代码：
+```
+    dispatch_queue_t queue = dispatch_queue_create("com.haley.cn", DISPATCH_QUEUE_CONCURRENT);
+    for (int i = 0; i < 5; i++) {
+        dispatch_async(queue, ^{
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+            [NSThread sleepForTimeInterval:i];
+        });
+        
+        if (i == 2) {
+            dispatch_barrier_async(queue, ^{
+                NSLog(@"barrier----%@",[NSThread currentThread]);
+            });
+        }
+    }
+// 打印结果：
+2016-07-11 12:45:36.173 PractiseProject[2579:110181] 并发2----线程:<NSThread: 0x7fdce3629e30>{number = 3, name = (null)}
+2016-07-11 12:45:36.173 PractiseProject[2579:110175] 并发1----线程:<NSThread: 0x7fdce3719d90>{number = 4, name = (null)}
+2016-07-11 12:45:36.173 PractiseProject[2579:110166] 并发0----线程:<NSThread: 0x7fdce3556860>{number = 2, name = (null)}
+2016-07-11 12:45:38.177 PractiseProject[2579:110181] barrier----<NSThread: 0x7fdce3629e30>{number = 3, name = (null)}
+2016-07-11 12:45:38.177 PractiseProject[2579:110175] 并发4----线程:<NSThread: 0x7fdce3719d90>{number = 4, name = (null)}
+2016-07-11 12:45:38.177 PractiseProject[2579:110181] 并发3----线程:<NSThread: 0x7fdce3629e30>{number = 3, name = (null)}
+```
+接下来介绍`dispatch_barrier_async`的使用场景,我们都知道关于数据的读写安全是非常麻烦的，必须保证在写入数据的时候，不能读取数据；而写入完成后，不管有多少个线程在读取数据都是OK的。这个场景使用dispatch_barrier_async再合适不过了。
+
+如何操作呢？
+
+重写某个数据的set 和get 方法：
+```
+- (void)setHeight:(int)height
+{
+    dispatch_barrier_async(_conCorrentQueue, ^{
+        _height = height;
+    });
+}
+
+- (int)height
+{
+    __block int height;
+    dispatch_sync(_conCorrentQueue, ^{
+        height = _height;
+    });
+    return height;
+}
+```
+> 注意：
+> 
+> * 1.从Xcode 4开始，我们定义property后，编译器会自动帮我们添加@synthesize，但是如果我们同时重写setter和getter,那么编译器便不再帮我们添加@synthesize，我们需要自己添加@synthesize。
+> 
+> * 2.dispatch_barrier_async只能使用dispatch_queue_create创建的并发队列，才能正确发挥它的作用。
+
+##### 4.2 dispatch_barrier_sync
+`dispatch_barrier_sync`与`dispatch_barrier_async`的功能基本一致，不同之处是，`dispatch_barrier_sync`是在当前线程中执行block中的任务，而`dispatch_barrier_async`则是在新的线程（有可能是之前使用过的子线程）中执行任务。 它们都是在用`dispatch_queue_create`创建的并发队列上有效果，而在串行队列或者`dispatch_get_global_queue`创建的并发队列中，作用与`dispatch_sync`一致。
+```
+    dispatch_queue_t queue = dispatch_queue_create("com.haley.cn", DISPATCH_QUEUE_CONCURRENT);
+    for (int i = 0; i < 5; i++) {
+        dispatch_async(queue, ^{
+            [NSThread sleepForTimeInterval:2];
+            NSLog(@"并发%d----线程:%@", i,[NSThread currentThread]);
+        });
+        
+        if (i == 2) {
+            dispatch_barrier_sync(queue, ^{
+                NSLog(@"barrier----%@",[NSThread currentThread]);
+            });
+        }
+    }
+// 打印结果：
+2016-07-11 13:27:19.139 PractiseProject[2820:122236] 并发0----线程:<NSThread: 0x7f9512cd0f10>{number = 4, name = (null)}
+2016-07-11 13:27:19.139 PractiseProject[2820:122229] 并发1----线程:<NSThread: 0x7f9512c0d7b0>{number = 3, name = (null)}
+2016-07-11 13:27:19.139 PractiseProject[2820:122322] 并发2----线程:<NSThread: 0x7f9512f1c210>{number = 2, name = (null)}
+2016-07-11 13:27:19.140 PractiseProject[2820:122192] barrier----<NSThread: 0x7f9512f04a20>{number = 1, name = main}
+2016-07-11 13:27:21.143 PractiseProject[2820:122322] 并发4----线程:<NSThread: 0x7f9512f1c210>{number = 2, name = (null)}
+2016-07-11 13:27:21.143 PractiseProject[2820:122229] 并发3----线程:<NSThread: 0x7f9512c0d7b0>{number = 3, name = (null)}
+```
+`dispatch_barrier`决定的只是它的任务是否在新的线程中执行，以及它一定在前面几个任务执行完后执行，并不会影响之前任务的执行顺序等。
+
+在串行队列或者`dispatch_get_global_queue`创建的并发队列中，`dispatch_barrier_sync`仅仅相当于`dispatch_sync`。
+
+### 5.Queue-Specific
+由于`dispatch_get_current_queue`API的移除，为了能够判断当前queue是否是之前创建的queue，我们可以利用`dispatch_queue_set_specific`和`dispatch_get_specific`给queue关联一个context data，后面再利用这个标识获取到context data。如果可以获取到说明当前上下文是在自己创建的queue中，如果不能获取到context data则表示当前是在其他队列上。
+
+使用场景: 自己创建一个队列，然后保证所有的操作都在该队列上执行。XMPP中有比较多的`dispatch_queue_set_specific`和`dispatch_get_specific`使用案例。
+
+设置标识和关联的数据：
+```
+dispatch_queue_t queue = dispatch_queue_create("com.haley.cn", DISPATCH_QUEUE_SERIAL);
+const void *queueSpecificKey = @"queueSpecificKey";
+dispatch_queue_set_specific(queue, queueSpecificKey, &queueSpecificKey, NULL);
+```
+获取关联数据：`dispatch_get_specific(queueSpecificKey)`
+
+完整的示例：
+
+```
+    dispatch_queue_t queue = dispatch_queue_create("com.haley.cn", DISPATCH_QUEUE_SERIAL);
+    // 当然这里也可以是其他类型的队列
+    //    dispatch_queue_t queue = dispatch_get_global_queue(0, 0);
+    //    dispatch_queue_t queue = dispatch_queue_create("com.haley.cn", DISPATCH_QUEUE_CONCURRENT);
+    
+    const void *queueSpecificKey = @"queueSpecificKey";
+    dispatch_queue_set_specific(queue, queueSpecificKey, &queueSpecificKey, NULL);
+    
+    dispatch_async(queue, ^{
+        NSLog(@"异步任务");
+        if (dispatch_get_specific(queueSpecificKey)) {
+            NSLog(@"com.haley.cn---1队列");
+        } else {
+            NSLog(@"---1其他队列");
+        }
+    });
+    
+    NSLog(@"主线程，主队列");
+    if (dispatch_get_specific(queueSpecificKey)) {
+        NSLog(@"com.haley.cn---2队列");
+    } else {
+        NSLog(@"----2其他队列");
+    }
+  // 打印结果：
+2016-07-11 14:30:56.772 PractiseProject[3379:152363] 主线程，主队列
+2016-07-11 14:30:56.772 PractiseProject[3379:152363] ----2其他队列
+2016-07-11 14:30:56.772 PractiseProject[3379:152451] 异步任务
+2016-07-11 14:30:56.773 PractiseProject[3379:152451] com.haley.cn---1队列
+```
+`dispatch_get_specific`所处的环境如果是在目标对列上时，就可以获取到关联的数据，否则就无法获取关联数据，返回NULL。
+
+看一看XMPP中的使用案例：
+```
+- (BOOL)activate:(XMPPStream *)aXmppStream
+{
+ __block BOOL result = YES;
+ 
+ dispatch_block_t block = ^{
+  
+  if (xmppStream != nil)
+  {
+   result = NO;
+  }
+  else
+  {
+   xmppStream = aXmppStream;
+   
+   [xmppStream addDelegate:self delegateQueue:moduleQueue];
+   [xmppStream registerModule:self];
+  }
+ };
+ 
+ if (dispatch_get_specific(moduleQueueTag))
+  block();
+ else
+  dispatch_sync(moduleQueue, block);
+ return result;
+}
+```
+
+为了保证block是在目标队列上执行，先判断当前是否在目标队列上（如果能取到关联数据，则说明在当前队列上），如果在目标队列上，直接执行block，否则就在目标队列上同步执行。
+
+Have Fun!
+

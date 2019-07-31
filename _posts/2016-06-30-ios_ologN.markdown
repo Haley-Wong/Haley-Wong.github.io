@@ -1,0 +1,107 @@
+---
+layout:     post
+title:      "算法之路（二）呈现O(logN)型的三个算法"
+date:       2016-06-30
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - 算法
+---
+
+# 典型时间复杂度
+我们知道算法的执行效率，可以从它的时间复杂度来推算出一二。而典型的时间复杂度有哪些类型呢？
+
+![典型的时间复杂度.png](/img/blogs/ios_ologN/img_01.webp)
+由上图，可以看出，除了常数时间复杂度外，logN型的算法效率是最高的。今天就介绍三种非常easy的logN型算法。
+
+## 对分查找
+给定一个整数X和整数A0，A1，...，An-1,后者已经预先排序并在内存中，求是的Ai= X的下表i,如果X不在数据中，则返回i = -1.
+
+```
+- (int)BinarySearch:(NSArray *)originArray element:(int)element
+{
+    int low, mid, high;
+    low = 0; high = (int)originArray.count - 1;
+    while (low <= high) {
+        mid = (low + high) / 2;
+        if ([originArray[mid] intValue] < element) {
+            low = mid + 1;
+        } else if ([originArray[mid] intValue] > element) {
+            high = mid -1;
+        } else {
+            return mid;
+        }
+    }
+    
+    return -1;
+}
+```
+**分析：**通过上面的程序可以看出，要算出时间复杂度，就是求出while循环的次数。
+mid 每次的取值分别是数组长度(N-1)/2,(N-1)/2/2,(N-1)/2/2/2,...，1，0，-1。那么只用求出2的多少次方等于N-1，再加上可能的多需要的次数2。假设2的f次方等于N-1，最大时间即为log(N-1) + 2。因此对分查找的时间复杂度为logN。再举一个实际的例子，假设最初high = 128,low = 0,则mid的最大取值为64，32，16，8，4，2，1，0，-1。大家可以计算时间。
+
+## 欧几里得算法
+第二个是计算最大公因数的欧几里得算法。两个整数的最大公因数Gcd是同时整除二者的最大整数。于是，Gcd(50,15) = 5。
+```
+- (unsigned int)Gcd:(unsigned int)m n:(unsigned int)n
+{
+    unsigned int Rem;
+    while (n > 0) {
+        Rem = m % n;
+        m = n;
+        n = Rem;
+    }
+    return m;
+}
+```
+算法超级简单，但是里面还是有一些精髓的。算法假设m>=n,但是如果m < n，则在第一次while循环后，m和n 会互相交换。
+
+该算法的整个运行时间依赖于确定余数序列的长度，也就是while循环的次数。
+
+依然举例m = 1989 和n = 1590,则余数序列是399，393，6，3，0。从而，Gcd(1989,1590) = 3。
+虽然看不出余数的值是按照常数引子递减，有时候递减的非常少，例如从399递减到393。但是，我们可以证明，两次迭代以后，余数最多是原始值的一半。迭代次数至多是2logN,所以时间复杂度是logN。
+
+怎么证明 M > N,则M mod N < M /2呢？
+
+如果N =< M/2,则由于余数小于N，即M mod N < N <= M/2，所以余数也小于M/2。
+如果N> M/2，则此时M中有个N，从而余数M-N < M/2。
+
+## 幂运算
+
+最后一个算法，是计算一个整数的幂。我们可以用乘法的次数作为运行时间的度量。
+
+计算X的N次方常见的算法是使用N-1次乘法自乘。但是用递归算法更好。
+
+```
+- (long)Pow:(long)x n:(unsigned int)n
+{
+    if (n == 0) {
+        return 1;
+    }
+    if (n == 1) {
+        return x;
+    }
+    
+    if ([self isEven:n]) {
+        return [self Pow:x * x n:n / 2];
+    } else {
+        return [self Pow:x * x n:n / 2] * x;
+    }
+}
+
+- (BOOL)isEven:(unsigned int)n
+{
+    if (n % 2 == 0) {
+        return YES;
+    } else {
+        return NO;
+    }
+}
+```
+
+如果N是偶数，则X的N次方 = X的N/2次方乘以X的N/2次方，如果N是奇数，则X的N次方 = X 的（N-1）/2 次方乘以 X的（N-1）/2次方乘以X。
+
+显然，所需要的乘法次数最多是2logN。那么时间复杂度就是logN咯。
+
+Have Fun!
+
+
