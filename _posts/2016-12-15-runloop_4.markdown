@@ -1,0 +1,322 @@
+---
+layout:     post
+title:      "RunLoop总结：RunLoop的应用场景（四）App卡顿监测"
+date:       2016-12-15
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - RunLoop
+---
+
+今天要介绍的RunLoop使用场景很有意思，在做长期项目，需要跟踪解决用户问题非常有用。
+
+使用RunLoop 监测主线程的卡顿，并将卡顿时的线程堆栈信息保存下来，下次上传到服务器。
+
+## 参考资料
+关于今天要介绍的使用RunLoop 监测主线程卡顿的资料如下：
+
+* [微信iOS卡顿监控系统](http://mp.weixin.qq.com/s?__biz=MzAwNDY1ODY2OQ==&mid=207890859&idx=1&sn=e98dd604cdb854e7a5808d2072c29162) （这篇文章要首先阅读，了解有哪些情况会引起主线程卡顿，监测到卡顿后怎么处理等）
+* [监控卡顿的方法](http://www.starming.com/index.php?v=index&view=91) （使用RunLoop监测卡顿的片段代码)
+* [简单监测iOS卡顿的demo](http://www.jianshu.com/p/71cfbcb15842) （使用RunLoop监测卡顿的例子）
+
+## 原理
+官方文档说明了RunLoop的执行顺序：
+
+```
+1. Notify observers that the run loop has been entered.
+2. Notify observers that any ready timers are about to fire.
+3. Notify observers that any input sources that are not port based are about to fire.
+4. Fire any non-port-based input sources that are ready to fire.
+5. If a port-based input source is ready and waiting to fire, process the event immediately. Go to step 9.
+6. Notify observers that the thread is about to sleep.
+7. Put the thread to sleep until one of the following events occurs:
+ * An event arrives for a port-based input source.
+ * A timer fires.
+ * The timeout value set for the run loop expires.
+ * The run loop is explicitly woken up.
+8. Notify observers that the thread just woke up.
+9. Process the pending event.
+ * If a user-defined timer fired, process the timer event and restart the loop. Go to step 2.
+ * If an input source fired, deliver the event.
+ * If the run loop was explicitly woken up but has not yet timed out, restart the loop. Go to step 2.
+10. Notify observers that the run loop has exited.
+```
+用伪代码来实现就是这样的：
+
+```
+{
+    /// 1. 通知Observers，即将进入RunLoop
+    /// 此处有Observer会创建AutoreleasePool: _objc_autoreleasePoolPush();
+    __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopEntry);
+    do {
+ 
+        /// 2. 通知 Observers: 即将触发 Timer 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeTimers);
+        /// 3. 通知 Observers: 即将触发 Source (非基于port的,Source0) 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeSources);
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__(block);
+ 
+        /// 4. 触发 Source0 (非基于port的) 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__(source0);
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__(block);
+ 
+        /// 6. 通知Observers，即将进入休眠
+        /// 此处有Observer释放并新建AutoreleasePool: _objc_autoreleasePoolPop(); _objc_autoreleasePoolPush();
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeWaiting);
+ 
+        /// 7. sleep to wait msg.
+        mach_msg() -> mach_msg_trap();
+        
+ 
+        /// 8. 通知Observers，线程被唤醒
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopAfterWaiting);
+ 
+        /// 9. 如果是被Timer唤醒的，回调Timer
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__(timer);
+ 
+        /// 9. 如果是被dispatch唤醒的，执行所有调用 dispatch_async 等方法放入main queue 的 block
+        __CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__(dispatched_block);
+ 
+        /// 9. 如果如果Runloop是被 Source1 (基于port的) 的事件唤醒了，处理这个事件
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__(source1);
+ 
+ 
+    } while (...);
+ 
+    /// 10. 通知Observers，即将退出RunLoop
+    /// 此处有Observer释放AutoreleasePool: _objc_autoreleasePoolPop();
+    __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopExit);
+}
+```
+主线程的RunLoop是在应用启动时自动开启的，也没有超时时间，所以正常情况下，主线程的RunLoop 只会在 2---9 之间无限循环下去。
+
+那么，我们只需要在主线程的RunLoop中添加一个observer，检测从 `kCFRunLoopBeforeSources` 到 `kCFRunLoopBeforeWaiting` 花费的时间 是否过长。如果花费的时间大于某一个阙值，我们就认为有卡顿，并把当前的线程堆栈转储到文件中，并在以后某个合适的时间，将卡顿信息文件上传到服务器。
+
+## 实现步骤
+在看了上面的两个监测卡顿的示例Demo后，我按照上面讲述的思路写了一个Demo，应该更容易理解吧。
+
+第一步，创建一个子线程，在线程启动时，启动其RunLoop。
+
+```
++ (instancetype)shareMonitor
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[[self class] alloc] init];
+        instance.monitorThread = [[NSThread alloc] initWithTarget:self selector:@selector(monitorThreadEntryPoint) object:nil];
+        [instance.monitorThread start];
+    });
+    
+    return instance;
+}
+
++ (void)monitorThreadEntryPoint
+{
+    @autoreleasepool {
+        [[NSThread currentThread] setName:@"FluencyMonitor"];
+        NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        [runLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
+        [runLoop run];
+    }
+}
+```
+第二步，在开始监测时，往主线程的RunLoop中添加一个observer，并往子线程中添加一个定时器，每0.5秒检测一次耗时的时长。
+
+```
+- (void)start
+{
+    if (_observer) {
+        return;
+    }
+    
+    // 1.创建observer
+    CFRunLoopObserverContext context = {0,(__bridge void*)self, NULL, NULL, NULL};
+    _observer = CFRunLoopObserverCreate(kCFAllocatorDefault,
+                                              kCFRunLoopAllActivities,
+                                              YES,
+                                              0,
+                                              &runLoopObserverCallBack,
+                                              &context);
+    // 2.将observer添加到主线程的RunLoop中
+    CFRunLoopAddObserver(CFRunLoopGetMain(), _observer, kCFRunLoopCommonModes);
+    
+    // 3.创建一个timer，并添加到子线程的RunLoop中
+    [self performSelector:@selector(addTimerToMonitorThread) onThread:self.monitorThread withObject:nil waitUntilDone:NO modes:@[NSRunLoopCommonModes]];
+}
+
+- (void)addTimerToMonitorThread
+{
+    if (_timer) {
+        return;
+    }
+    // 创建一个timer
+    CFRunLoopRef currentRunLoop = CFRunLoopGetCurrent();
+    CFRunLoopTimerContext context = {0, (__bridge void*)self, NULL, NULL, NULL};
+    _timer = CFRunLoopTimerCreate(kCFAllocatorDefault, 0.1, 0.01, 0, 0,
+                                                   &runLoopTimerCallBack, &context);
+    // 添加到子线程的RunLoop中
+    CFRunLoopAddTimer(currentRunLoop, _timer, kCFRunLoopCommonModes);
+}
+
+```
+
+第三步，补充观察者回调处理
+
+```
+static void runLoopObserverCallBack(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info){
+    FluencyMonitor *monitor = (__bridge FluencyMonitor*)info;
+    NSLog(@"MainRunLoop---%@",[NSThread currentThread]);
+    switch (activity) {
+        case kCFRunLoopEntry:
+            NSLog(@"kCFRunLoopEntry");
+            break;
+        case kCFRunLoopBeforeTimers:
+            NSLog(@"kCFRunLoopBeforeTimers");
+            break;
+        case kCFRunLoopBeforeSources:
+            NSLog(@"kCFRunLoopBeforeSources");
+            monitor.startDate = [NSDate date];
+            monitor.excuting = YES;
+            break;
+        case kCFRunLoopBeforeWaiting:
+            NSLog(@"kCFRunLoopBeforeWaiting");
+            monitor.excuting = NO;
+            break;
+        case kCFRunLoopAfterWaiting:
+            NSLog(@"kCFRunLoopAfterWaiting");
+            break;
+        case kCFRunLoopExit:
+            NSLog(@"kCFRunLoopExit");
+            break;
+        default:
+            break;
+    }
+}
+```
+从打印信息来看，RunLoop进入睡眠状态的时间可能会非常短，有时候只有1毫秒，有时候甚至1毫秒都不到，静止不动时，则会长时间进入睡觉状态。
+
+因为主线程中的block、交互事件、以及其他任务都是在`kCFRunLoopBeforeSources` 到 `kCFRunLoopBeforeWaiting` 之前执行，所以我在即将开始执行Sources 时，记录一下时间，并把正在执行任务的标记置为YES，将要进入睡眠状态时，将正在执行任务的标记置为NO。
+
+第四步，补充timer 的回调处理
+
+```
+static void runLoopTimerCallBack(CFRunLoopTimerRef timer, void *info)
+{
+    FluencyMonitor *monitor = (__bridge FluencyMonitor*)info;
+    if (!monitor.excuting) {
+        return;
+    }
+    
+    // 如果主线程正在执行任务，并且这一次loop 执行到 现在还没执行完，那就需要计算时间差
+    NSTimeInterval excuteTime = [[NSDate date] timeIntervalSinceDate:monitor.startDate];
+    NSLog(@"定时器---%@",[NSThread currentThread]);
+    NSLog(@"主线程执行了---%f秒",excuteTime);
+    
+    if (excuteTime >= 0.01) {
+        NSLog(@"线程卡顿了%f秒",excuteTime);
+        [monitor handleStackInfo];
+    }
+}
+```
+timer 每 0.01秒执行一次，如果当前正在执行任务的状态为YES，并且从开始执行到现在的时间大于阙值，则把堆栈信息保存下来，便于后面处理。
+
+为了能够捕获到堆栈信息，我把timer的间隔调的很小（0.01），而评定为卡顿的阙值也调的很小（0.01）。 实际使用时这两个值应该是比较大，timer间隔为1s，卡顿阙值为2s即可。
+
+```
+2016-12-15 08:56:39.921 RunLoopDemo03[957:16300] lag happen, detail below: 
+ Incident Identifier: 68BAB24C-3224-46C8-89BF-F9AABA2E3530
+CrashReporter Key:   TODO
+Hardware Model:      x86_64
+Process:         RunLoopDemo03 [957]
+Path:            /Users/harvey/Library/Developer/CoreSimulator/Devices/6ED39DBB-9F69-4ACB-9CE3-E6EB56BBFECE/data/Containers/Bundle/Application/5A94DEFE-4E2E-4D23-9F69-7B1954B2C960/RunLoopDemo03.app/RunLoopDemo03
+Identifier:      com.Haley.RunLoopDemo03
+Version:         1.0 (1)
+Code Type:       X86-64
+Parent Process:  debugserver [958]
+
+Date/Time:       2016-12-15 00:56:38 +0000
+OS Version:      Mac OS X 10.1 (16A323)
+Report Version:  104
+
+Exception Type:  SIGTRAP
+Exception Codes: TRAP_TRACE at 0x1063da728
+Crashed Thread:  4
+
+Thread 0:
+0   libsystem_kernel.dylib              0x000000010a14341a mach_msg_trap + 10
+1   CoreFoundation                      0x0000000106f1e7b4 __CFRunLoopServiceMachPort + 212
+2   CoreFoundation                      0x0000000106f1dc31 __CFRunLoopRun + 1345
+3   CoreFoundation                      0x0000000106f1d494 CFRunLoopRunSpecific + 420
+4   GraphicsServices                    0x000000010ad8aa6f GSEventRunModal + 161
+5   UIKit                               0x00000001073b7964 UIApplicationMain + 159
+6   RunLoopDemo03                       0x00000001063dbf8f main + 111
+7   libdyld.dylib                       0x0000000109d7468d start + 1
+
+Thread 1:
+0   libsystem_kernel.dylib              0x000000010a14be5e kevent_qos + 10
+1   libdispatch.dylib                   0x0000000109d13074 _dispatch_mgr_invoke + 248
+2   libdispatch.dylib                   0x0000000109d12e76 _dispatch_mgr_init + 0
+
+Thread 2:
+0   libsystem_kernel.dylib              0x000000010a14b4e6 __workq_kernreturn + 10
+1   libsystem_pthread.dylib             0x000000010a16e221 start_wqthread + 13
+
+Thread 3:
+0   libsystem_kernel.dylib              0x000000010a14341a mach_msg_trap + 10
+1   CoreFoundation                      0x0000000106f1e7b4 __CFRunLoopServiceMachPort + 212
+2   CoreFoundation                      0x0000000106f1dc31 __CFRunLoopRun + 1345
+3   CoreFoundation                      0x0000000106f1d494 CFRunLoopRunSpecific + 420
+4   Foundation                          0x00000001064d7ff0 -[NSRunLoop runMode:beforeDate:] + 274
+5   Foundation                          0x000000010655f991 -[NSRunLoop runUntilDate:] + 78
+6   UIKit                               0x0000000107e3d539 -[UIEventFetcher threadMain] + 118
+7   Foundation                          0x00000001064e7ee4 __NSThread__start__ + 1243
+8   libsystem_pthread.dylib             0x000000010a16eabb _pthread_body + 180
+9   libsystem_pthread.dylib             0x000000010a16ea07 _pthread_body + 0
+10  libsystem_pthread.dylib             0x000000010a16e231 thread_start + 13
+
+Thread 4 Crashed:
+0   RunLoopDemo03                       0x00000001063dfae5 -[PLCrashReporter generateLiveReportWithThread:error:] + 632
+1   RunLoopDemo03                       0x00000001063da728 -[FluencyMonitor handleStackInfo] + 152
+2   RunLoopDemo03                       0x00000001063da2cf runLoopTimerCallBack + 351
+3   CoreFoundation                      0x0000000106f26964 __CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__ + 20
+4   CoreFoundation                      0x0000000106f265f3 __CFRunLoopDoTimer + 1075
+5   CoreFoundation                      0x0000000106f2617a __CFRunLoopDoTimers + 250
+6   CoreFoundation                      0x0000000106f1df01 __CFRunLoopRun + 2065
+7   CoreFoundation                      0x0000000106f1d494 CFRunLoopRunSpecific + 420
+8   Foundation                          0x00000001064d7ff0 -[NSRunLoop runMode:beforeDate:] + 274
+9   Foundation                          0x00000001064d7ecb -[NSRunLoop run] + 76
+10  RunLoopDemo03                       0x00000001063d9cbd +[FluencyMonitor monitorThreadEntryPoint] + 253
+11  Foundation                          0x00000001064e7ee4 __NSThread__start__ + 1243
+12  libsystem_pthread.dylib             0x000000010a16eabb _pthread_body + 180
+13  libsystem_pthread.dylib             0x000000010a16ea07 _pthread_body + 0
+14  libsystem_pthread.dylib             0x000000010a16e231 thread_start + 13
+
+Thread 4 crashed with X86-64 Thread State:
+   rip: 0x00000001063dfae5    rbp: 0x000070000f53fc50    rsp: 0x000070000f53f9c0    rax: 0x000070000f53fa20 
+   rbx: 0x000070000f53fb60    rcx: 0x0000000000005e0b    rdx: 0x0000000000000000    rdi: 0x00000001063dfc6a 
+   rsi: 0x000070000f53f9f0     r8: 0x0000000000000014     r9: 0xffffffffffffffec    r10: 0x000000010a1433f6 
+   r11: 0x0000000000000246    r12: 0x000060800016b580    r13: 0x0000000000000000    r14: 0x0000000000000006 
+   r15: 0x000070000f53fa40 rflags: 0x0000000000000206     cs: 0x000000000000002b     fs: 0x0000000000000000 
+    gs: 0x0000000000000000 
+
+```
+剩下的工作就是将字符串保存进文件，以及上传到服务器了。
+
+我们不能将卡顿的阙值定的太小，也不能将所有的卡顿信息都上传，原因有两点，一，太浪费用户流量；二、文件太多，App内存储和上传后服务器端保存都会占用空间。
+
+可以参考微信的做法，7天以上的文件删除，随机抽取上传，并且上传前对文件进行压缩处理等。
+
+文中的示例代码都来自：[RunLoopDemos中的RunLoopDemo03](https://github.com/Haley-Wong/RunLoopDemos)
+
+Have Fun!
+
+
+
+
+
+
+
+ 
+  
+
+

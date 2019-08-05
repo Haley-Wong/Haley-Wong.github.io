@@ -1,0 +1,169 @@
+---
+layout:     post
+title:      "RunLoop 总结：RunLoop的应用场景（二）让Timer正常运转"
+date:       2016-12-03
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - RunLoop
+---
+
+上一篇讲了使用RunLoop保证子线程的长时间存活，而不是执行完任务后就立刻销毁的应用场景。这一篇就讲述一下RunLoop如何保证NSTimer在视图滑动时，依然能正常运转。
+
+## 参考资料
+好的书籍都是值得反复看的，那好的文章，好的资料也值得我们反复看。我们在不同的阶段来相同的文章或资料或书籍都能有不同的收获，那它就是好文章，好书籍，好资料。
+
+关于iOS 中的RunLoop资料非常的少，以下资料都是非常好的。
+
+* [CF框架源码](https://opensource.apple.com/tarballs/CF/)（这是一份很重要的源码，可以看到CF框架的每一次迭代，我们可以下载最新的版本来分析，或与以下文章对比学习。目前最新的是CF-1153.18.tar.gz）
+* [RunLoop官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)(学习iOS的任何技术，官方文档都是入门或深入的极好手册；我们也可以在Xcode--->Help--->Docementation and API Reference --->搜索RunLoop---> Guides（59）--->《Threading Programming Guide:Run Loops》这篇即是）
+* [深入理解RunLoop](http://blog.ibireme.com/2015/05/18/runloop/)(不要看到右边滚动条很长，其实文章占篇幅2/5左右，下面有很多的评论，可见这篇文章的火热)
+* [RunLoop个人小结](http://www.jianshu.com/p/37ab0397fec7#) (这是一篇总结的很通俗容易理解的文章)
+* [sunnyxx线下分享RunLoop](http://v.youku.com/v_show/id_XODgxODkzODI0.html)(这是一份关于线下分享与讨论RunLoop的视频，备用地址：https://pan.baidu.com/s/1pLm4Vf9）
+* [iPhonedevwiki中的CFRunLoop](http://iphonedevwiki.net/index.php/CFRunLoop)(commonModes中其实包含了三种Mode，我们通常知道两种，还有一种是啥，你知道么？)
+* [维基百科中的Event loop](https://en.wikipedia.org/wiki/Event_loop)（可以看看这篇文章了解一下事件循环）
+
+## 使用场景
+1.我们经常会在应用中看到tableView 的header 上是一个横向ScrollView，一般我们使用NSTimer，每隔几秒切换一张图片。可是当我们滑动tableView的时候，顶部的scollView并不会切换图片，这可怎么办呢？
+
+2.界面上除了有tableView，还有显示倒计时的Label，当我们在滑动tableView时，倒计时就停止了，这又该怎么办呢？
+
+## 场景中的代码实现
+
+我们的定时器Timer是怎么写的呢？
+
+一般的做法是，在`主线程`（可能是某控制器的viewDidLoad方法）中，创建Timer。
+可能会有两种写法，但是都有上面的问题，下面先看下Timer的两种写法：
+
+```
+// 第一种写法
+NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(timerUpdate) userInfo:nil repeats:YES];
+[[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+[timer fire];
+// 第二种写法
+[NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(timerUpdate) userInfo:nil repeats:YES];
+```
+上面的两种写法其实是等价的。第二种写法，默认也是将timer添加到`NSDefaultRunLoopMode`下的，并且会自动fire。
+
+要验证这一结论，我们只需要在timerUpdate方法中，将当前runLoop的currentMode打印出来即可。
+
+```
+- (void)timerUpdate
+{
+    NSLog(@"当前线程：%@",[NSThread currentThread]);
+    NSLog(@"启动RunLoop后--%@",[NSRunLoop currentRunLoop].currentMode);
+//    NSLog(@"currentRunLoop:%@",[NSRunLoop currentRunLoop]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.count ++;
+        NSString *timerText = [NSString stringWithFormat:@"计时器:%ld",self.count];
+        self.timerLabel.text = timerText;
+    });
+}
+// 控制台输出结果：
+2016-12-02 15:33:57.829 RunLoopDemo02[6698:541533] 当前线程：<NSThread: 0x600000065500>{number = 1, name = main}
+2016-12-02 15:33:57.829 RunLoopDemo02[6698:541533] 启动RunLoop后--kCFRunLoopDefaultMode
+```
+
+然后，我们在滑动tableView的时候timerUpdate方法，并不会调用。
+
+**原因是啥呢？**
+
+原因是当我们滑动scrollView时，主线程的RunLoop 会切换到`UITrackingRunLoopMode`这个Mode，执行的也是`UITrackingRunLoopMode`下的任务（Mode中的item），而timer 是添加在`NSDefaultRunLoopMode`下的，所以timer任务并不会执行，只有当`UITrackingRunLoopMode`的任务执行完毕，runloop切换到`NSDefaultRunLoopMode`后，才会继续执行timer。
+
+
+**要如何解决这一问题呢？**
+
+解决方法很简单，我们只需要在添加timer 时，将mode 设置为`NSRunLoopCommonModes`即可。
+
+```
+- (void)timerTest
+{
+    // 第一种写法
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(timerUpdate) userInfo:nil repeats:YES];
+    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    [timer fire];
+    // 第二种写法，因为是固定添加到defaultMode中，就不要用了
+}
+```
+从[RunLoop官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)和 [iPhonedevwiki中的CFRunLoop](http://iphonedevwiki.net/index.php/CFRunLoop)可以看出，`NSRunLoopCommonModes`并不是一种Mode，而是一种特殊的标记，关联的有一个set ，官方文档说：`For Cocoa applications, this set includes the default, modal, and event tracking modes by default.`（默认包含[NSDefaultRunLoopMode](https://developer.apple.com/reference/foundation/runloopmode/1409732-defaultrunloopmode)、[NSModalPanelRunLoopMode](https://developer.apple.com/reference/foundation/runloopmode/1428524-modalpanelrunloopmode)、[NSEventTrackingRunLoopMode](https://developer.apple.com/reference/foundation/runloopmode/1428765-eventtrackingrunloopmode)）
+添加到`NSRunLoopCommonModes`中的还没有执行的任务，会在mode切换时，再次添加到当前的mode中，这样就能保证不管当前runloop切换到哪一个mode，任务都能正常执行。并且被添加到`NSRunLoopCommonModes`中的任务会存储在runloop 的commonModeItems中。
+
+## 其他一些关于timer的坑
+
+我们在子线程中使用timer，也可以解决上面的问题，但是需要注意的是把timer加入到当前runloop后，必须让runloop 运行起来，否则timer仅执行一次。
+
+示例代码：
+
+```
+//首先是创建一个子线程
+- (void)createThread
+{
+    NSThread *subThread = [[NSThread alloc] initWithTarget:self selector:@selector(timerTest) object:nil];
+    [subThread start];
+    self.subThread = subThread;
+}
+
+// 创建timer，并添加到runloop的mode中
+- (void)timerTest
+{
+    @autoreleasepool {
+        NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        NSLog(@"启动RunLoop前--%@",runLoop.currentMode);
+        NSLog(@"currentRunLoop:%@",[NSRunLoop currentRunLoop]);
+        // 第一种写法,改正前
+    //    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(timerUpdate) userInfo:nil repeats:YES];
+    //    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+    //    [timer fire];
+        // 第二种写法
+        [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(timerUpdate) userInfo:nil repeats:YES];
+    
+        [[NSRunLoop currentRunLoop] run];
+    }
+}
+
+//更新label
+- (void)timerUpdate
+{
+    NSLog(@"当前线程：%@",[NSThread currentThread]);
+    NSLog(@"启动RunLoop后--%@",[NSRunLoop currentRunLoop].currentMode);
+    NSLog(@"currentRunLoop:%@",[NSRunLoop currentRunLoop]);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.count ++;
+        NSString *timerText = [NSString stringWithFormat:@"计时器:%ld",self.count];
+        self.timerLabel.text = timerText;
+    });
+}
+
+```
+
+添加timer 前的控制台输出：
+
+![添加timer前的runloop](/img/blogs/runloop_2/img_01.webp)
+
+添加timer后的控制台输出：
+
+![添加timer后的runloop](/img/blogs/runloop_2/img_02.webp)
+
+从控制台输出可以看出，timer确实被添加到`NSDefaultRunLoopMode`中了。可是添加到子线程中的`NSDefaultRunLoopMode`里，无论如何滚动，timer都能够很正常的运转。这又是为啥呢？
+
+这就是多线程与runloop的关系了，每一个线程都有一个与之关联的RunLoop，而每一个RunLoop可能会有多个Mode。CPU会在多个线程间切换来执行任务，呈现出多个线程同时执行的效果。执行的任务其实就是RunLoop去各个Mode里执行各个item。因为RunLoop是独立的两个，相互不会影响，所以在子线程添加timer，滑动视图时，timer能正常运行。
+
+##总结
+
+* 1、如果是在主线程中运行timer，想要timer在某界面有视图滚动时，依然能正常运转，那么将timer添加到RunLoop中时，就需要设置mode 为`NSRunLoopCommonModes`。
+* 2、如果是在子线程中运行timer,那么将timer添加到RunLoop中后，Mode设置为`NSDefaultRunLoopMode`或`NSRunLoopCommonModes`均可，但是需要保证RunLoop在运行，且其中有任务。
+
+文中的示例代码都来自：[RunLoopDemos中的RunLoopDemo02](https://github.com/Haley-Wong/RunLoopDemos)
+
+Have Fun!
+
+
+
+
+
+
+
+ 
+  
+
+

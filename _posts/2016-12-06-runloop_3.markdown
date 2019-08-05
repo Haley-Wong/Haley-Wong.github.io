@@ -1,0 +1,220 @@
+---
+layout:     post
+title:      "RunLoop总结：RunLoop的应用场景（三）滚动视图流畅性优化"
+date:       2016-12-06
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - RunLoop
+---
+
+今天要讲的RunLoop的应用场景可能太简单了，所以东西比较少。因为跟UITableView、UICollectionView等的滑动优化有关，就顺便总结一下会影响UITableView、UICollectionView等视图滑动流畅的因素。
+
+## 参考资料
+好的书籍都是值得反复看的，那好的文章，好的资料也值得我们反复看。我们在不同的阶段来相同的文章或资料或书籍都能有不同的收获，那它就是好文章，好书籍，好资料。
+
+关于iOS 中的RunLoop资料非常的少，以下资料都是非常好的。
+
+* [CF框架源码](https://opensource.apple.com/tarballs/CF/)（这是一份很重要的源码，可以看到CF框架的每一次迭代，我们可以下载最新的版本来分析，或与以下文章对比学习。目前最新的是CF-1153.18.tar.gz）
+* [RunLoop官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)(学习iOS的任何技术，官方文档都是入门或深入的极好手册；我们也可以在Xcode--->Help--->Docementation and API Reference --->搜索RunLoop---> Guides（59）--->《Threading Programming Guide:Run Loops》这篇即是）
+* [深入理解RunLoop](http://blog.ibireme.com/2015/05/18/runloop/)(不要看到右边滚动条很长，其实文章占篇幅2/5左右，下面有很多的评论，可见这篇文章的火热)
+* [RunLoop个人小结](http://www.jianshu.com/p/37ab0397fec7#) (这是一篇总结的很通俗容易理解的文章)
+* [sunnyxx线下分享RunLoop](http://v.youku.com/v_show/id_XODgxODkzODI0.html)(这是一份关于线下分享与讨论RunLoop的视频，备用地址：https://pan.baidu.com/s/1pLm4Vf9）
+* [iPhonedevwiki中的CFRunLoop](http://iphonedevwiki.net/index.php/CFRunLoop)(commonModes中其实包含了三种Mode，我们通常知道两种，还有一种是啥，你知道么？)
+* [维基百科中的Event loop](https://en.wikipedia.org/wiki/Event_loop)（可以看看这篇文章了解一下事件循环）
+
+## 应用场景
+让UITableView、UICollectionView等延迟加载图片。下面就拿UITableView来举例说明：
+UITableView 的 cell 上显示网络图片，一般需要两步，第一步下载网络图片；第二步，将网络图片设置到UIImageView上。
+
+为了不影响滑动，第一步，我们一般都是放在子线程中来做，这个不做赘述。
+
+第二步，一般是回到主线程去设置。有了前两篇文章关于Mode的切换，想必你已经知道怎么做了。
+就是在为图片视图设置图片时，在主线程设置，并调用`performSelector:withObject:afterDelay:inModes:`方法。最后一个参数，仅设置一个`NSDefaultRunLoopMode`。
+
+```
+UIImage *downloadedImage = ....;
+[self.myImageView performSelector:@selector(setImage:) withObject:downloadedImage afterDelay:0 inModes:@[NSDefaultRunLoopMode]];
+```
+当然，即使是读取沙盒或者bundle内的图片，我们也可以运用这一点来改善视图的滑动。但是如果UITableView上的图片都是默认图，似乎也不是很好，你需要自己来权衡了。
+
+有一个非常好的关于设置图片视图的图片，在RunLoop切换Mode时优化的例子：[RunLoopWorkDistribution](https://github.com/diwu/RunLoopWorkDistribution)
+先看一下界面布局：
+
+![1002.png](/img/blogs/runloop_3/img_01.webp)
+
+一个Cell里有两个Label，和三个imageView,这里的图片是非常高清的（2034 × 1525），一个界面最多有18张图片。为了表现出卡顿的效果，我先自己实现了一下Cell,主要示例代码：
+
+```
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    static NSString *identifier = @"cellId";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (cell == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+    }
+    for (NSInteger i = 1; i <= 5; i++) {
+        [[cell.contentView viewWithTag:i] removeFromSuperview];
+    }
+    
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(5, 5, 300, 25)];
+    label.backgroundColor = [UIColor clearColor];
+    label.textColor = [UIColor redColor];
+    label.text = [NSString stringWithFormat:@"%zd - Drawing index is top priority", indexPath.row];
+    label.font = [UIFont boldSystemFontOfSize:13];
+    label.tag = 1;
+    [cell.contentView addSubview:label];
+    
+    UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectMake(105, 20, 85, 85)];
+    imageView.tag = 2;
+    NSString *path = [[NSBundle mainBundle] pathForResource:@"spaceship" ofType:@"jpg"];
+    UIImage *image = [UIImage imageWithContentsOfFile:path];
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+    imageView.image = image;
+    NSLog(@"current:%@",[NSRunLoop currentRunLoop].currentMode);
+    [cell.contentView addSubview:imageView];
+    
+    UIImageView *imageView2 = [[UIImageView alloc] initWithFrame:CGRectMake(200, 20, 85, 85)];
+    imageView2.tag = 3;
+    UIImage *image2 = [UIImage imageWithContentsOfFile:path];
+    imageView2.contentMode = UIViewContentModeScaleAspectFit;
+    imageView2.image = image2;
+    [cell.contentView addSubview:imageView2];
+    
+    UILabel *label2 = [[UILabel alloc] initWithFrame:CGRectMake(5, 99, 300, 35)];
+    label2.lineBreakMode = NSLineBreakByWordWrapping;
+    label2.numberOfLines = 0;
+    label2.backgroundColor = [UIColor clearColor];
+    label2.textColor = [UIColor colorWithRed:0 green:100.f/255.f blue:0 alpha:1];
+    label2.text = [NSString stringWithFormat:@"%zd - Drawing large image is low priority. Should be distributed into different run loop passes.", indexPath.row];
+    label2.font = [UIFont boldSystemFontOfSize:13];
+    label2.tag = 4;
+    
+    UIImageView *imageView3 = [[UIImageView alloc] initWithFrame:CGRectMake(5, 20, 85, 85)];
+    imageView3.tag = 5;
+    UIImage *image3 = [UIImage imageWithContentsOfFile:path];
+    imageView3.contentMode = UIViewContentModeScaleAspectFit;
+    imageView3.image = image3;
+    [cell.contentView addSubview:label2];
+    [cell.contentView addSubview:imageView3];
+
+    return cell;
+}
+```
+
+然后在滑动的时候，顺便打印出当前的runloopMode，打印结果是：
+
+```
+2016-12-08 10:34:31.450 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+2016-12-08 10:34:31.701 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+2016-12-08 10:34:32.184 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+2016-12-08 10:34:36.317 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+2016-12-08 10:34:36.601 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+2016-12-08 10:34:37.217 TestDemo[3202:1791817] current:UITrackingRunLoopMode
+```
+可以看出，为imageView设置image,是在`UITrackingRunLoopMode`中进行的，如果图片很大，图片解压缩和渲染肯定会很耗时，那么卡顿就是必然的。
+
+> 查看实时帧率，我们可以在Xcode 中选择`真机调试`，然后 Product -->Profile-->Core Animation
+
+![](/img/blogs/runloop_3/img_02.webp)
+
+然后点击开始监测即可：
+![](/img/blogs/runloop_3/img_03.webp)
+
+下面就是帧率：
+
+![](/img/blogs/runloop_3/img_04.webp)
+
+这里就可以使用先使用上面的方式做一次改进。
+
+```
+[imageView performSelector:@selector(setImage:) withObject:image afterDelay:0 inModes:@[NSDefaultRunLoopMode]];
+```
+
+可以保证在滑动起来顺畅，可是停下来之后，渲染还未完成时，继续滑动就会变的卡顿。
+
+在切换到`NSDefaultRunLoopMode`中，一个runloop循环要解压和渲染18张大图，耗时肯定超过50ms(1/60s)。
+
+我们可以继续来优化，一次runloop循环，仅渲染一张大图片，分18次来渲染，这样每一次runloop耗时就比较短了，滑动起来就会非常顺畅。这也是[RunLoopWorkDistribution](https://github.com/diwu/RunLoopWorkDistribution)中的做法。
+
+简单描述一下这种做法：
+
+首先创建一个单例，单例中定义了几个数组，用来存要在runloop循环中执行的任务，然后为主线程的runloop添加一个CFRunLoopObserver,当主线程在`NSDefaultRunLoopMode`中执行完任务，即将睡眠前，执行一个单例中保存的一次图片渲染任务。关键代码看 `DWURunLoopWorkDistribution`类即可。
+
+## 一点UITableView滑动性能优化扩展
+
+影响UITableView的滑动，有哪些因素呢？
+
+关于这一点，人眼能识别的帧率是60左右，这也就是为什么，电脑屏幕的最佳帧率是60Hz。
+屏幕一秒钟会刷新60次（屏幕在一秒钟会重新渲染60次），那么每次刷新界面之间的处理时间，就是1/60,也就是1/60秒。也就是说，所有会导致计算、渲染耗时的操作都会影响UITableView的流畅。下面举例说明：
+
+**1.在主线程中做耗时操作**
+
+耗时操作，包括从网络下载、从网络加载、从本地数据库读取数据、从本地文件中读取大量数据、往本地文件中写入数据等。（这一点，相信大家都知道，要尽量避免在主线程中执行，一般都是创建一个子线程来执行，然后再回到主线程）
+
+**2.动态计算UITableViewCell的高度，时间过久**
+
+在iOS7之前，每一个Cell的高度，只会计算一次，后面再次滑到这个Cell这里，都会读取缓存的高度，也即高度计算的代理方法不会再执行。但是到了iOS8,不会再缓存Cell的高度了，也就是说每次滑到某个Cell，代理方法都会执行一次，重新计算这个Cell的高度（iOS 9以后没测试过）。
+
+所以，如果计算Cell高度的这个过程过于复杂，或者某个计算使用的算法耗时很长，可能会导致计算时间大于1/60，那么必然导致界面的卡顿，或不流畅。
+
+关于这一点，我以前的做法是在Cell中定义一个public方法，用来计算Cell高度，然后计算完高度后，将高度存储在Cell对应的Model中（Model里定义一个属性来存高度），然后在渲染Cell时，我们依然需要动态计算各个子视图的高度。（可能是没用什么太过复杂的计算或算法，时间都很短滑动也顺畅）
+
+其实，更优的做法是：再定义一个ModelFrame对象，在子线程请求服务器接口返回后，转换为对象的同时，也把各个子视图的frame计算好，存在ModelFrame中，ModelFrame 和 Model 合并成一个Model存储到数组中。这样在为Cell各个子控件赋值时，仅仅是取值、赋值，在计算Cell高度时，也仅仅是加法运算。
+
+**3.界面中背景色透明的视图过多**
+
+为什么界面中背景色透明的视图过多会影响UITableView的流畅？
+
+很多文章中都提到，可以使用模拟器--->Debug--->Color Blended Layers来检测透明背景色，把透明背景色改为与父视图背景色一样的颜色，这样来提高渲染速度。
+
+![](/img/blogs/runloop_3/img_05.webp)
+
+
+简单说明一下，就是屏幕上显示的所有东西，都是通过一个个像素点呈现出来的。而每一个像素点都是通过三原色（红、绿、蓝）组合呈现出不同的颜色，最终才是我们看到的手机屏幕上的内容。在 iPhone5 的液晶显示器上有1,136×640=727,040个像素，因此有2,181,120个颜色单元。在15寸视网膜屏的 MacBook Pro 上，这一数字达到15.5百万以上。所有的图形堆栈一起工作以确保每次正确的显示。当你滚动整个屏幕的时候，数以百万计的颜色单元必须以每秒60次的速度刷新，这是一个很大的工作量。
+
+每一个像素点的颜色计算是这样的：
+
+R = S + D * (1 - Sa)
+
+结果的颜色 是子视图这个像素点的颜色 + 父视图这个像素点的颜色 * （1 - 子视图的透明度）
+当然，如果有两个兄弟视图叠加，那么上面的中文解释可能并不贴切，只是为了更容易理解。
+
+如果两个兄弟视图重合，计算的是重合区域的像素点：
+
+结果的颜色 是 上面的视图这个像素点的颜色 + 下面这个视图该像素点的颜色 * （1 - 上面视图的透明度）
+
+只有当透明度为1时，上面的公式变为R = S，就简单的多了。否则的话，就非常复杂了。
+
+每一个像素点是由三原色组成，例如父视图的颜色和透明度是（Pr,Pg,Pb,Pa)，子视图的颜色颜色和透明度是（Sr,Sg,Sb,Sa)，那么我们计算这个重合区域某像素点的颜色，需要先分别计算出红、绿、蓝。
+
+Rr = Sr + Pr * (1 - Sa)，
+
+Rg = Sg + Pg * (1 - Sa)，
+
+Rb = Sb + Pb * (1 - Sa)。
+
+如果父视图的透明度，即Pa = 1,那么这个像素的颜色就是(Rr,Rg,Rb)。
+
+但是，如果父视图的透明Pa 不等 1，那么我们需要将这个结果颜色当做一个整体作为子视图的颜色，再去与父视图组合计算颜色，如此递推。
+
+所以设置不透明时，可以为GPU节省大量的工作，减少大量的消耗。
+
+更加详细的说明，可以看[绘制像素到屏幕上](https://objccn.io/issue-3-1/)这篇文章，这是一篇关于绘制像素的非常棒👍的文章，我反复看了三遍。
+
+**4.主线程RunLoop切换到`UITrackingRunLoopMode`时，视图有过多的修改**
+
+这也就是上面介绍的RunLoop的使用，避免在主线程RunLoop切换到`UITrackingRunLoopMode`时，修改视图。
+
+Have Fun!
+
+
+
+
+
+
+
+ 
+  
+
+

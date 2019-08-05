@@ -1,0 +1,499 @@
+---
+layout:     post
+title:      "YYModel V1.0.4源码解析"
+date:       2016-10-15
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - Tools
+---
+
+YYKit出现了很长时间了，一直想要详细解析一下它的源码，都是各种缘由推迟了。
+
+最近稍微闲了一点，决定先从最简单的YYModel开始吧。
+
+首先，我也先去搜索了一下YYModel相关的文章，解析主要API和用法的居多，也有很多人大呼看不懂。其实主要还是要静下心来看，因为YY用了很多并不常见，也不常用的底层API，你一个个去查官方文档会发现，他们并不难。
+
+YYModel 里对转换过的model 属性做了缓存、对ClassInfo、MethodInfo、PropertyInfo等做了一层封装，这些也是为了便于缓存和取值。
+
+以前我在写runtime 小结的时候，就说过所有解析json 或者自动实现其他数据转换为model的，最终都是利用runtime 来动态获取model的属性、示例变量等。YYModel也是利用这个来实现的，摘自`YYClassInfo`中的`_update`方法：
+```
+    Class cls = self.cls;
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    if (methods) {
+        NSMutableDictionary *methodInfos = [NSMutableDictionary new];
+        _methodInfos = methodInfos;
+        for (unsigned int i = 0; i < methodCount; i++) {
+            YYClassMethodInfo *info = [[YYClassMethodInfo alloc] initWithMethod:methods[i]];
+            if (info.name) methodInfos[info.name] = info;
+        }
+        free(methods);
+    }
+    unsigned int propertyCount = 0;
+    objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
+    if (properties) {
+        NSMutableDictionary *propertyInfos = [NSMutableDictionary new];
+        _propertyInfos = propertyInfos;
+        for (unsigned int i = 0; i < propertyCount; i++) {
+            YYClassPropertyInfo *info = [[YYClassPropertyInfo alloc] initWithProperty:properties[i]];
+            if (info.name) propertyInfos[info.name] = info;
+        }
+        free(properties);
+    }
+    
+    unsigned int ivarCount = 0;
+    Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+    if (ivars) {
+        NSMutableDictionary *ivarInfos = [NSMutableDictionary new];
+        _ivarInfos = ivarInfos;
+        for (unsigned int i = 0; i < ivarCount; i++) {
+            YYClassIvarInfo *info = [[YYClassIvarInfo alloc] initWithIvar:ivars[i]];
+            if (info.name) ivarInfos[info.name] = info;
+        }
+        free(ivars);
+    }
+```
+## YYModel 调用顺序一览
+上面先提到了json 转 Model的精髓，然后下面就要一步一步的了解，YYModel 是如何实现将json 转为Model的。
+### 第一步
+关于第一步，要提到如下两个方法：
+````
+/** 这个方法是将json 转换为model（使用概率低）
+这个方法内部其实也分为两步：
+第一步，将json 转换为 dict；
+第二步，调用下面那个方法将dict 转换为 model
+*/
++ (nullable instancetype)yy_modelWithJSON:(id)json;
+
+// 这个方法是将dict 转换为model（使用概率高）
++ (nullable instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary;
+```
+上面这个两个方法，第二个方法应该是使用的最多的，第一个方法感觉极少有机会能用到吧。
+
+为什么这么说呢？
+
+因为我们的网络接口往往都会包含成功失败的bool值、状态码、message、以及数据（可能是数组、字典、字符串等），我们需要先将接口返回的json结构转为字典后，判断bool值或状态码，来确定是否要进一步解析数据。因此第二个方法应该是使用几率最大的方法。
+
+### 第二步
+第二步，就要开始解析上面的方法二了。先来看看源码，我加了一些中文注释：
+```
++ (instancetype)yy_modelWithDictionary:(NSDictionary *)dictionary {
+    // 首先校验参数
+    if (!dictionary || dictionary == (id)kCFNull) return nil;
+    if (![dictionary isKindOfClass:[NSDictionary class]]) return nil;
+    
+    // 这里的cls 就是我们的实际model 类型
+    Class cls = [self class];
+    // 这一步，是重中之重，通过class 获取到各种信息，然后封装到_YYModelMeta中。
+    _YYModelMeta *modelMeta = [_YYModelMeta metaWithClass:cls];
+    if (modelMeta->_hasCustomClassFromDictionary) {
+        cls = [cls modelCustomClassForDictionary:dictionary] ?: cls;
+    }
+    
+    NSObject *one = [cls new];
+    // 这里也是极为关键的一步，转换model 并赋值
+    if ([one yy_modelSetWithDictionary:dictionary]) return one;
+    return nil;
+}
+```
+那么`_YYModelMeta *modelMeta = [_YYModelMeta metaWithClass:cls];`中做了些什么呢？
+在解惑上面问题前，我们先来看看`_YYModelMeta`中都有些什么?
+```
+@interface _YYModelMeta : NSObject {
+    @package
+    YYClassInfo *_classInfo;
+    /// 字典，键是属性名，值是_YYModelPropertyMeta类型的对象
+    NSDictionary *_mapper;
+    /// 这个Model 对象的属性（属性已封装为_YYModelPropertyMeta类型）数组
+    NSArray *_allPropertyMetas;
+    /// Array<_YYModelPropertyMeta>, property meta which is mapped to a key path.
+    NSArray *_keyPathPropertyMetas;
+    /// Array<_YYModelPropertyMeta>, property meta which is mapped to multi keys.
+    NSArray *_multiKeysPropertyMetas;
+    /// 要转换的属性个数，等于_allPropertyMetas.count
+    NSUInteger _keyMappedCount;
+    /// Model class type.
+    YYEncodingNSType _nsType;
+    
+    /** 以下bool值，是根据我们是否在model 类中实现了对应的自定义转换方法来判断的，
+    比如如果我们实现了`- (BOOL)modelCustomTransformFromDictionary:(NSDictionary *)dic`，
+    那么`_hasCustomTransformFromDictionary`的值就是YES了。
+*/
+    BOOL _hasCustomWillTransformFromDictionary;
+    BOOL _hasCustomTransformFromDictionary;
+    BOOL _hasCustomTransformToDictionary;
+    BOOL _hasCustomClassFromDictionary;
+}
+```
+> Tip：_mapper 和 _allPropertyMetas中存储的是要转换的属性。它是受黑名单、白名单、setter 和getter 影响的。
+> 
+>假如有一个Model，有20个属性，其中有5个是不需要转换的，已经添加在黑名单方法中。那么_mapper和 _allPropertyMetas中，实际上只有15个属性。
+>
+>如果我们实现了白名单方法，里面只写了两个属性，那么_mapper 和 _allPropertyMetas中就只有这两个属性了。
+>
+>如果白名单里的两个属性都是只读的，那么_allPropertyMetas中就没有属性了。
+白名单 和黑名单方法是协议方法，分别是`modelPropertyWhitelist` 和 `modelPropertyBlacklist`，白名单中是要转换的属性名数组，黑名单中是不转换的属性名数组。
+
+好了，现在可以来看看`[_YYModelMeta metaWithClass:cls]`了，我来加一些注释说明
+```
++ (instancetype)metaWithClass:(Class)cls {
+    if (!cls) return nil;
+    // 1、声明一个字典，用来存Model 类和类的信息，键是Model 名。
+    static CFMutableDictionaryRef cache;
+    static dispatch_once_t onceToken;
+    // 2、声明一个信号量
+    static dispatch_semaphore_t lock;
+    dispatch_once(&onceToken, ^{
+        // 不要被这个方法唬住，它其实就是一个创建可变字典的方法，只不过是底层CF方法罢了。
+        cache = CFDictionaryCreateMutable(CFAllocatorGetDefault(), 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        // 为信号量设置资源并发数
+        lock = dispatch_semaphore_create(1);
+    });
+    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+    // 3、先从之前的字典中取要解析的Model 的类信息
+    _YYModelMeta *meta = CFDictionaryGetValue(cache, (__bridge const void *)(cls));
+    dispatch_semaphore_signal(lock);
+    // 4、如果从缓存中没取到，则说明以前没有缓存过
+    if (!meta || meta->_classInfo.needUpdate) {
+        // 5、没缓存过，就需要解析一下咯（这里又是重中之重）
+        meta = [[_YYModelMeta alloc] initWithClass:cls];
+        if (meta) {
+            dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+            // 6、解析完，当然是要放进缓存中咯
+            CFDictionarySetValue(cache, (__bridge const void *)(cls), (__bridge const void *)(meta));
+            dispatch_semaphore_signal(lock);
+        }
+    }
+    return meta;
+}
+```
+
+**Tips**：
+
+1. 关于信号量，可以去看[GCD API 记录 （三）中的8.dispatch_semaphore](/2016/07/13/gcd_3/)
+2. 我们可以用常用的API来写一下这个方法，可能更容易理解：
+
+```
++ (instancetype)metaWithClass:(Class)cls
+{
+    if (!cls) return nil;
+    static NSMutableDictionary *cache;
+    static dispatch_once_t onceToken;
+    static NSLock *lock;
+    dispatch_once(&onceToken, ^{
+        cache = [[NSMutableDictionary alloc] init];
+        lock = [[NSLock alloc] init];
+    });
+    
+    [lock lock];
+    _YYModelMeta *meta = [cache valueForKey:cls];
+    [lock unlock];
+    // 这里的meta._classInfo.needUpdate可能有点问题，因为_classInfo是示例变量，并不能用点语法取到，要注意。
+    if (!meta || meta._classInfo.needUpdate) {
+        meta = [[_YYModelMeta alloc] initWithClass:cls];
+        if (meta) {
+            [lock lock];
+            [cache setValue:meta forKey:cls];
+            [lock unlock];
+        }
+    }
+ 
+    return meta;
+}
+```
+### 第三步
+这里就是要解析第二步里的重中之重`[[_YYModelMeta alloc] initWithClass:cls];`了。
+由于`_YYModelMeta`中的`initWithClass`代码比较长（有150行），我就不在这里贴出来了。写一下伪代码：
+```
+- (instancetype)initWithClass:(Class)cls {
+    // 1.从Class中获取类信息，并封装成对象(这里是重中之重)
+    YYClassInfo *classInfo = [YYClassInfo classInfoWithClass:cls];
+    if (!classInfo) return nil;
+    self = [super init];
+    
+    // 2.获取黑名单
+    NSSet *blackList = [cls getBlackList];
+    
+    // 3.获取白名单
+    NSSet *whiteList = [cls getWhiteList];
+    
+    // 4.获取容器类属性以及对应Class 的字典
+    NSDictionary *genericMapper = [cls getContainerGenericMapper];
+    
+    // 5.获取要解析的属性,包括排除黑名单、验证白名单、验证是否有getter 和setter 等。
+    NSDictionary *allPropertyMetas = [cls getAllPropertyMetas];
+    
+    // 6.如果有属性名和json中的键不一样的，为属性设置json中的key，也有可能是keyPath。
+    NSDictionary *mapper = [cls handlerCustomMapper:allPropertyMetas];
+    
+    // 7.将allPropertyMetas中剩下的值添加到mapper中。（因为可能只有部分属性名和json中的键不一致，设置之后会从allPropertyMetas删除）
+    [mapper setKeyValuesFrom:allPropertyMetas];
+    
+    // 8.其他属性赋值
+    _classInfo = classInfo;
+    _keyMappedCount = _allPropertyMetas.count;
+    _nsType = YYClassGetNSType(cls);
+    _hasCustomWillTransformFromDictionary = ([cls instancesRespondToSelector:@selector(modelCustomWillTransformFromDictionary:)]);
+    _hasCustomTransformFromDictionary = ([cls instancesRespondToSelector:@selector(modelCustomTransformFromDictionary:)]);
+    _hasCustomTransformToDictionary = ([cls instancesRespondToSelector:@selector(modelCustomTransformToDictionary:)]);
+    _hasCustomClassFromDictionary = ([cls respondsToSelector:@selector(modelCustomClassForDictionary:)]);
+}
+```
+用上面的伪代码，将`initWithClass`简化之后，就很容易理解了。
+
+### 第四步
+第三步中的重点就是`YYClassInfo *classInfo = [YYClassInfo classInfoWithClass:cls];`里的实现，YYModel 里通过runtime 获取Model 的所有属性，也就是在这个方法中做的。下面我们来看看这个方法的实现代码：
+```
+// 看过步骤二，用常用的API重写过的方法再来看这个方法，应该就是So easy！
++ (instancetype)classInfoWithClass:(Class)cls {
+    if (!cls) return nil;
+    // 1.声明一个类缓存字典
+    static CFMutableDictionaryRef classCache;
+    /** 2.声明一个元类缓存字典，这里为什么要声明一个元组缓存字典呢？
+      因为YYClassInfo，有一个属性superClassInfo，也是YYClassInfo类型的，也
+      要使用这个方法来实例化，所以多次迭代后，可能cls 就是元类了。
+   */
+    static CFMutableDictionaryRef metaCache;
+    static dispatch_once_t onceToken;
+    // 3.声明一个信号量，线程安全会用到
+    static dispatch_semaphore_t lock;
+    dispatch_once(&onceToken, ^{
+         // 4.初始化类缓存字典
+        classCache = CFDictionaryCreateMutable(CFAllocatorGetDefault(), 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        // 5.初始化元类缓存字典
+        metaCache = CFDictionaryCreateMutable(CFAllocatorGetDefault(), 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        lock = dispatch_semaphore_create(1);
+    });
+    dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+    // 6.从缓存中获取类信息
+    YYClassInfo *info = CFDictionaryGetValue(class_isMetaClass(cls) ? metaCache : classCache, (__bridge const void *)(cls));
+    // 7.如果能取到，但是需要更新，则利用runtime更新一下
+    if (info && info->_needUpdate) {
+        [info _update];
+    }
+    dispatch_semaphore_signal(lock);
+    // 8.如果没获取到，则根据cls 初始化一个类信息对象
+    if (!info) {
+        info = [[YYClassInfo alloc] initWithClass:cls];
+        if (info) {
+            dispatch_semaphore_wait(lock, DISPATCH_TIME_FOREVER);
+            // 9.将类信息保存到缓存字典中
+            CFDictionarySetValue(info.isMeta ? metaCache : classCache, (__bridge const void *)(cls), (__bridge const void *)(info));
+            dispatch_semaphore_signal(lock);
+        }
+    }
+    return info;
+}
+```
+通过上面的代码以及我添加的注释，应该就很容易理解这个方法的每一步了。
+
+接下来就是所有json 转换model 的精髓了，也是在文章开头已经展示过的代码了。
+
+如果对利用runtime 获取属性列表等不太了解的，可以去看[Runtime系列（二）--Runtime的使用场景 中的1.运行时获取某个类的属性或函数](/2016/07/27/runtime_practice/)
+
+```
+- (void)_update {
+    // 1.先将一些实例变量置空
+    _ivarInfos = nil;
+    _methodInfos = nil;
+    _propertyInfos = nil;
+    
+    Class cls = self.cls;
+    unsigned int methodCount = 0;
+    // 2.获取方法列表
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    if (methods) {
+        NSMutableDictionary *methodInfos = [NSMutableDictionary new];
+        _methodInfos = methodInfos;
+        for (unsigned int i = 0; i < methodCount; i++) {
+            // 2.1对Method 做了一层封装，封装成了YYClassMethodInfo
+            YYClassMethodInfo *info = [[YYClassMethodInfo alloc] initWithMethod:methods[i]];
+            if (info.name) methodInfos[info.name] = info;
+        }
+        free(methods);
+    }
+    unsigned int propertyCount = 0;
+    // 3.获取属性列表
+    objc_property_t *properties = class_copyPropertyList(cls, &propertyCount);
+    if (properties) {
+        NSMutableDictionary *propertyInfos = [NSMutableDictionary new];
+        _propertyInfos = propertyInfos;
+        for (unsigned int i = 0; i < propertyCount; i++) {
+            // 对Property做了一层封装，封装成了YYClassPropertyInfo
+            YYClassPropertyInfo *info = [[YYClassPropertyInfo alloc] initWithProperty:properties[i]];
+            if (info.name) propertyInfos[info.name] = info;
+        }
+        free(properties);
+    }
+    
+    unsigned int ivarCount = 0;
+    // 4.获取示例变量列表
+    Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+    if (ivars) {
+        NSMutableDictionary *ivarInfos = [NSMutableDictionary new];
+        _ivarInfos = ivarInfos;
+        for (unsigned int i = 0; i < ivarCount; i++) {
+           // 对示例变量做了一层封装，封装成了YYClassIvarInfo
+            YYClassIvarInfo *info = [[YYClassIvarInfo alloc] initWithIvar:ivars[i]];
+            if (info.name) ivarInfos[info.name] = info;
+        }
+        free(ivars);
+    }
+    
+    if (!_ivarInfos) _ivarInfos = @{};
+    if (!_methodInfos) _methodInfos = @{};
+    if (!_propertyInfos) _propertyInfos = @{};
+    
+    _needUpdate = NO;
+}
+```
+
+可能值得一提的还有这个方法：
+```
+// 这个方法其实就是利用runtime 为一些属性赋值，可能需要递归调用而已
+- (instancetype)initWithClass:(Class)cls {
+    if (!cls) return nil;
+    self = [super init];
+    _cls = cls;
+    _superCls = class_getSuperclass(cls);
+    _isMeta = class_isMetaClass(cls);
+    if (!_isMeta) {
+        _metaCls = objc_getMetaClass(class_getName(cls));
+    }
+    _name = NSStringFromClass(cls);
+    [self _update];
+
+    _superClassInfo = [self.class classInfoWithClass:_superCls];
+    return self;
+}
+```
+### 第五步
+看完上面这四步，对于YYModel 是如何获取属性、方法、实例变量等都应该已经清楚了。现在要继续回到步骤二中的方法了。
+该方法中还有一个需要重点理解的方法`[one yy_modelSetWithDictionary:dictionary]`，model 中所有属性的赋值，都是在这个方法中实现的。下面来理解一下这个方法：
+```
+- (BOOL)yy_modelSetWithDictionary:(NSDictionary *)dic {
+    // 1.校验dic
+    if (!dic || dic == (id)kCFNull) return NO;
+    if (![dic isKindOfClass:[NSDictionary class]]) return NO;
+    
+    /** 获取类信息，这里如果使用的是原来的类，则其实是从缓存中取出来的，因为在前面已经调用过metaWithClass方法了。
+      如果是设置了转换的类，则可能会再重新完整执行一次metaWithClass。
+    */
+    _YYModelMeta *modelMeta = [_YYModelMeta metaWithClass:object_getClass(self)];
+    if (modelMeta->_keyMappedCount == 0) return NO;
+    
+    if (modelMeta->_hasCustomWillTransformFromDictionary) {
+        dic = [((id<YYModel>)self) modelCustomWillTransformFromDictionary:dic];
+        if (![dic isKindOfClass:[NSDictionary class]]) return NO;
+    }
+    
+    // 2.自定义的一个context 结构体，把model 的信息、model 对象指针、以及参数字典赋值上
+    ModelSetContext context = {0};
+    context.modelMeta = (__bridge void *)(modelMeta);
+    context.model = (__bridge void *)(self);
+    context.dictionary = (__bridge void *)(dic);
+    
+    
+    if (modelMeta->_keyMappedCount >= CFDictionaryGetCount((CFDictionaryRef)dic)) {
+        CFDictionaryApplyFunction((CFDictionaryRef)dic, ModelSetWithDictionaryFunction, &context);
+        if (modelMeta->_keyPathPropertyMetas) {
+            CFArrayApplyFunction((CFArrayRef)modelMeta->_keyPathPropertyMetas,
+                                 CFRangeMake(0, CFArrayGetCount((CFArrayRef)modelMeta->_keyPathPropertyMetas)),
+                                 ModelSetWithPropertyMetaArrayFunction,
+                                 &context);
+        }
+        if (modelMeta->_multiKeysPropertyMetas) {
+            CFArrayApplyFunction((CFArrayRef)modelMeta->_multiKeysPropertyMetas,
+                                 CFRangeMake(0, CFArrayGetCount((CFArrayRef)modelMeta->_multiKeysPropertyMetas)),
+                                 ModelSetWithPropertyMetaArrayFunction,
+                                 &context);
+        }
+    } else {
+         // 如果转换属性个数小于字典里个键值对个数，
+        CFArrayApplyFunction((CFArrayRef)modelMeta->_allPropertyMetas,
+                             CFRangeMake(0, modelMeta->_keyMappedCount),
+                             ModelSetWithPropertyMetaArrayFunction,
+                             &context);
+    }
+    
+    // 最后，如果有一些特殊的属性，需要自己转换赋值的话，再处理一下
+    if (modelMeta->_hasCustomTransformFromDictionary) {
+        return [((id<YYModel>)self) modelCustomTransformFromDictionary:dic];
+    }
+    return YES;
+}
+```
+
+对于上面的代码，可能有困惑的是`CFArrayApplyFunction` 和 `CFArrayApplyFunction`这个函数。
+在官方文档里有解释：
+```
+// Calls a function once for each key-value pair in a dictionary.
+// 对于字典里的每一个键值对，都会调用一次applier 方法
+void CFDictionaryApplyFunction(CFDictionaryRef theDict, CFDictionaryApplierFunction applier, void *context);
+
+//Calls a function once for each element in range in an array。
+// 对于数组中指定range返回的每一个元素调用一次applier
+void CFArrayApplyFunction(CFArrayRef theArray, CFRange range, CFArrayApplierFunction applier, void *context);
+```
+看完注释，再来看一下YYModel 中的实现：
+```
+static void ModelSetWithDictionaryFunction(const void *_key, const void *_value, void *_context) {
+    ModelSetContext *context = _context;
+  // 1.从上下文中取到model 的信息
+    __unsafe_unretained _YYModelMeta *meta = (__bridge _YYModelMeta *)(context->modelMeta);
+    // 2.从转换字典中取到属性对象
+    __unsafe_unretained _YYModelPropertyMeta *propertyMeta = [meta->_mapper objectForKey:(__bridge id)(_key)];
+    __unsafe_unretained id model = (__bridge id)(context->model);
+  // 3.以防有多个相同key 的不同值
+    while (propertyMeta) {
+        if (propertyMeta->_setter) {
+            // 为model 的该属性赋值。
+            ModelSetValueForProperty(model, (__bridge __unsafe_unretained id)_value, propertyMeta);
+        }
+        propertyMeta = propertyMeta->_next;
+    };
+}
+```
+而`ModelSetValueForProperty`方法中会根据属性的类型调用`objc_msgSend`来赋相应类型的值。
+例如字符串类型的赋值：
+```
+if (meta->_nsType == YYEncodingTypeNSString) {
+    ((void (*)(id, SEL, id))(void *) objc_msgSend)((id)model, meta->_setter, value);
+ } 
+```
+`ModelSetWithPropertyMetaArrayFunction` 与字典的处理方式类似，只不过applier 中的参数直接就是属性对象罢了。
+
+```
+static void ModelSetWithPropertyMetaArrayFunction(const void *_propertyMeta, void *_context) {
+    ModelSetContext *context = _context;
+    // 获取字典参数
+    __unsafe_unretained NSDictionary *dictionary = (__bridge NSDictionary *)(context->dictionary);
+    // 这里只是强转一下类型而已
+    __unsafe_unretained _YYModelPropertyMeta *propertyMeta = (__bridge _YYModelPropertyMeta *)(_propertyMeta);
+    if (!propertyMeta->_setter) return;
+    id value = nil;
+    
+    // 这里因为value 的值，对象的可能有keyPath，也有直接的key。所以用不同的方式来取value
+    if (propertyMeta->_mappedToKeyArray) {
+        value = YYValueForMultiKeys(dictionary, propertyMeta->_mappedToKeyArray);
+    } else if (propertyMeta->_mappedToKeyPath) {
+        value = YYValueForKeyPath(dictionary, propertyMeta->_mappedToKeyPath);
+    } else {
+        value = [dictionary objectForKey:propertyMeta->_mappedToKey];
+    }
+    
+    if (value) {
+        // 获取model 的指针
+        __unsafe_unretained id model = (__bridge id)(context->model);
+        // 这里就是为model 赋值啦
+        ModelSetValueForProperty(model, value, propertyMeta);
+    }
+}
+```
+
+到这里YYModel 的解析就完毕啦。
+
+Have Fun!
+
+

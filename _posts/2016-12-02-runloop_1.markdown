@@ -1,0 +1,282 @@
+---
+layout:     post
+title:      "RunLoop 总结：RunLoop的应用场景（一）保证线程长久存活"
+date:       2016-12-02
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - RunLoop
+---
+
+## 参考资料
+好的书籍都是值得反复看的，那好的文章，好的资料也值得我们反复看。我们在不同的阶段来相同的文章或资料或书籍都能有不同的收获，那它就是好文章，好书籍，好资料。
+
+关于iOS 中的RunLoop资料非常的少，以下这些资料都是非常好的。
+
+* [CF框架源码](https://opensource.apple.com/tarballs/CF/)（这是一份很重要的源码，可以看到CF框架的每一次迭代，我们可以下载最新的版本来分析，或与以下文章对比学习。目前最新的是CF-1153.18.tar.gz）
+* [RunLoop官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)(学习iOS的任何技术，官方文档都是入门或深入的极好手册；我们也可以在Xcode--->Help--->Docementation and API Reference --->搜索RunLoop---> Guides（59）--->《Threading Programming Guide:Run Loops》这篇即是）
+* [深入理解RunLoop](http://blog.ibireme.com/2015/05/18/runloop/)(不要看到右边滚动条很长，其实文章占篇幅2/5左右，下面有很多的评论，可见这篇文章的火热)
+* [RunLoop个人小结](http://www.jianshu.com/p/37ab0397fec7#) (这是一篇总结的很通俗容易理解的文章)
+* [sunnyxx线下分享RunLoop](http://v.youku.com/v_show/id_XODgxODkzODI0.html)(这是一份关于线下分享与讨论RunLoop的视频，备用地址：https://pan.baidu.com/s/1pLm4Vf9）
+* [iPhonedevwiki中的CFRunLoop](http://iphonedevwiki.net/index.php/CFRunLoop)(commonModes中其实包含了三种Mode，我们通常知道两种，还有一种是啥，你知道么？)
+*  [维基百科中的Event loop](https://en.wikipedia.org/wiki/Event_loop)（可以看看这篇文章了解一下事件循环）
+
+## 说明
+因为RunLoop 里有很多新的平时基本很难接触到的概念或者对象，所以如果从RunLoop是啥，里面包含啥，为什么是这样讲起，难免太迷茫，太晦涩难懂。大多数关于RunLoop 的文章也是从基础讲起的，文章也比较长，可能看了三分之一，就已经懵了，没了技术看下去的动力。所以我决定先从RunLoop的使用场景和用法讲起，看到了一些用法和现象，再去看它的实现就要容易理解的多了。
+
+文章中的示例代码，我会在文章末提供一个关于RunLoop的示例Demo。
+
+## RunLoop的使用场景
+下面介绍一下，可以使用RunLoop的几个使用场景(本想一篇写完，无奈一个使用场景就让文章很长了，还是分几篇来讲吧)。
+
+### 1.保证线程的长时间存活
+在iOS开发过程中，有时候我们不希望一些花费时间比较长的操作阻塞主线程，导致界面卡顿，那么我们就会创建一个子线程，然后把这些花费时间比较长的操作放在子线程中来处理。可是当子线程中的任务执行完毕后，子线程就会被销毁掉。
+
+**怎么来验证上面这个结论呢？**
+
+首先，我们创建一个HLThread类，继承自NSThread，然后重写dealloc 方法。
+
+```
+@interface HLThread : NSThread
+
+@end
+
+@implementation HLThread
+
+- (void)dealloc
+{
+    NSLog(@"%s",__func__);
+}
+
+@end
+
+```
+然后，在控制器中用HLThread创建一个线程，执行一个任务，观察任务执行完毕后，线程是否被销毁。
+
+```
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    // 1.测试线程的销毁
+    [self threadTest];
+}
+
+- (void)threadTest
+{
+    HLThread *subThread = [[HLThread alloc] initWithTarget:self selector:@selector(subThreadOpetion) object:nil];
+    [subThread start];
+}
+
+- (void)subThreadOpetion
+{
+    @autoreleasepool {
+        NSLog(@"%@----子线程任务开始",[NSThread currentThread]);
+        [NSThread sleepForTimeInterval:3.0];
+        NSLog(@"%@----子线程任务结束",[NSThread currentThread]);
+    }
+}
+```
+控制台输出的结果如下：
+
+```
+2016-12-01 16:44:25.559 RunLoopDemo[4516:352041] <HLThread: 0x608000275680>{number = 4, name = (null)}----子线程任务开始
+2016-12-01 16:44:28.633 RunLoopDemo[4516:352041] <HLThread: 0x608000275680>{number = 4, name = (null)}----子线程任务结束
+2016-12-01 16:44:28.633 RunLoopDemo[4516:352041] -[HLThread dealloc]
+```
+当子线程中的任务执行完毕后，线程就被立刻销毁了。如果程序中，需要经常在子线程中执行任务，频繁的创建和销毁线程，会造成资源的浪费。这时候我们就可以使用RunLoop来让该线程长时间存活而不被销毁。
+
+我们将上面的示例代码修改一下，修改后的代码过程为，创建一个子线程，当子线程启动后，启动runloop，点击视图，会在子线程中执行一个耗时3秒的任务（其实就是让线程睡眠3秒）。
+
+修改后的代码如下：
+
+```
+@implementation ViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    // 1.测试线程的销毁
+    [self threadTest];
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    [self performSelector:@selector(subThreadOpetion) onThread:self.subThread withObject:nil waitUntilDone:NO];
+}
+
+- (void)threadTest
+{
+    HLThread *subThread = [[HLThread alloc] initWithTarget:self selector:@selector(subThreadEntryPoint) object:nil];
+    [subThread setName:@"HLThread"];
+    [subThread start];
+    self.subThread = subThread;
+}
+
+/**
+ 子线程启动后，启动runloop
+ */
+- (void)subThreadEntryPoint
+{
+    @autoreleasepool {
+        NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        //如果注释了下面这一行，子线程中的任务并不能正常执行
+        [runLoop addPort:[NSMachPort port] forMode:NSRunLoopCommonModes];
+        NSLog(@"启动RunLoop前--%@",runLoop.currentMode);
+        [runLoop run];
+    }
+}
+
+/**
+ 子线程任务
+ */
+- (void)subThreadOpetion
+{
+    NSLog(@"启动RunLoop后--%@",[NSRunLoop currentRunLoop].currentMode);
+    NSLog(@"%@----子线程任务开始",[NSThread currentThread]);
+    [NSThread sleepForTimeInterval:3.0];
+    NSLog(@"%@----子线程任务结束",[NSThread currentThread]);
+}
+
+@end
+```
+先看控制台输出结果：
+
+```
+2016-12-01 17:22:44.396 RunLoopDemo[4733:369202] 启动RunLoop前--(null)
+2016-12-01 17:22:49.285 RunLoopDemo[4733:369202] 启动RunLoop后--kCFRunLoopDefaultMode
+2016-12-01 17:22:49.285 RunLoopDemo[4733:369202] <HLThread: 0x60000027cb40>{number = 4, name = HLThread}----子线程任务开始
+2016-12-01 17:22:52.359 RunLoopDemo[4733:369202] <HLThread: 0x60000027cb40>{number = 4, name = HLThread}----子线程任务结束
+2016-12-01 17:22:55.244 RunLoopDemo[4733:369202] 启动RunLoop后--kCFRunLoopDefaultMode
+2016-12-01 17:22:55.245 RunLoopDemo[4733:369202] <HLThread: 0x60000027cb40>{number = 4, name = HLThread}----子线程任务开始
+2016-12-01 17:22:58.319 RunLoopDemo[4733:369202] <HLThread: 0x60000027cb40>{number = 4, name = HLThread}----子线程任务结束
+```
+
+> 有几点需要注意：
+> 1.获取RunLoop只能使用 [NSRunLoop currentRunLoop] 或 [NSRunLoop mainRunLoop];
+> 2.即使RunLoop开始运行，如果RunLoop 中的 modes 为空，或者要执行的mode里没有item，那么RunLoop会直接在当前loop中返回，并进入睡眠状态。
+> 3.自己创建的Thread中的任务是在kCFRunLoopDefaultMode这个mode中执行的。
+> 4.在子线程创建好后，最好所有的任务都放在AutoreleasePool中。
+
+**注意点一解释**
+
+[RunLoop官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)中的第二段中就已经说明了，我们的应用程序并不需要自己创建RunLoop，而是要在合适的时间启动runloop。
+
+[CF框架源码](https://opensource.apple.com/tarballs/CF/)中有`CFRunLoopGetCurrent(void)` 和 `CFRunLoopGetMain(void)`,查看源码可知，这两个API中，都是先从全局字典中取，如果没有与该线程对应的RunLoop，那么就会帮我们创建一个RunLoop（创建RunLoop的过程在函数`_CFRunLoopGet0(pthread_t t)`中）。
+
+**注意点二解释**
+
+这一点，可以将示例代码中的`[runLoop addPort:[NSMachPort port] forMode:NSRunLoopCommonModes];`，可以看到注释掉后，无论我们如何点击视图，控制台都不会有任何的输出，那是因为mode 中并没有item任务。经过NSRunLoop封装后，只可以往mode中添加两类item任务：NSPort（对应的是source）、NSTimer，如果使用`CFRunLoopRef`,则可以使用C语言API,往mode中添加source、timer、observer。
+
+如果不添加 `[runLoop addPort:[NSMachPort port] forMode:NSRunLoopCommonModes];`，我们把runloop的信息输出，可以看到：
+
+![添加port前的RunLoop](/img/blogs/runloop_1/img_01.webp)
+
+如果我们添加上`[runLoop addPort:[NSMachPort port] forMode:NSRunLoopCommonModes];`,再把RunLoop的信息输出，可以看到：
+
+![添加port后的RunLoop](/img/blogs/runloop_1/img_02.webp)
+
+
+**注意点三解释**
+
+怎么确认自己创建的子线程上的任务是在kCFRunLoopDefaultMode这个mode中执行的呢？
+
+我们只需要在执行任务的时候，打印出该RunLoop的currentMode即可。
+
+因为RunLoop执行任务是会在mode间切换，只执行该mode上的任务，每次切换到某个mode时，currentMode就会更新。源码请下载：[CF框架源码](https://opensource.apple.com/tarballs/CF/)
+`CFRunLoopRun()`方法中会调用`CFRunLoopRunSpecific()`方法，而`CFRunLoopRunSpecific()`方法中有这么两行关键代码：
+
+```
+CFRunLoopModeRef currentMode = __CFRunLoopFindMode(rl, modeName, false);
+......这中间还有好多逻辑代码
+CFRunLoopModeRef previousMode = rl->_currentMode;
+rl->_currentMode = currentMode;
+...... 这中间也有一堆的逻辑
+rl->_currentMode = previousMode;
+
+```
+我测试后，控制台输出的是：
+
+```
+2016-12-02 11:09:47.909 RunLoopDemo[5479:442560] 启动RunLoop后--kCFRunLoopDefaultMode
+2016-12-02 11:09:47.910 RunLoopDemo[5479:442560] <HLThread: 0x608000270a80>{number = 4, name = HLThread}----子线程任务开始
+2016-12-02 11:09:50.984 RunLoopDemo[5479:442560] <HLThread: 0x608000270a80>{number = 4, name = HLThread}----子线程任务结束
+```
+
+**注意点四解释**
+
+关于AutoReleasePool的[官方文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmAutoreleasePools.html)中有提到：
+
+```
+If you spawn a secondary thread.
+You must create your own autorelease pool block as soon as the thread begins executing; 
+otherwise, your application will leak objects. (See Autorelease Pool Blocks and Threads for details.)
+
+Each thread in a Cocoa application maintains its own stack of autorelease pool blocks. 
+If you are writing a Foundation-only program or if you detach a thread, you need to create your own autorelease pool block.
+If your application or thread is long-lived and potentially generates a lot of autoreleased objects, 
+you should use autorelease pool blocks (like AppKit and UIKit do on the main thread); 
+otherwise, autoreleased objects accumulate and your memory footprint grows. 
+If your detached thread does not make Cocoa calls, you do not need to use an autorelease pool block.
+```
+
+## AFNetworking中的RunLoop案例
+
+在AFNetworking 2.6.3之前的版本，使用的还是NSURLConnection，可以在`AFURLConnectionOperation`中找到使用RunLoop的源码：
+
+```
++ (void)networkRequestThreadEntryPoint:(id)__unused object {
+    @autoreleasepool {
+        [[NSThread currentThread] setName:@"AFNetworking"];
+        NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
+        [runLoop addPort:[NSMachPort port] forMode:NSDefaultRunLoopMode];
+        [runLoop run];
+    }
+}
+ 
++ (NSThread *)networkRequestThread {
+    static NSThread *_networkRequestThread = nil;
+    static dispatch_once_t oncePredicate;
+    dispatch_once(&oncePredicate, ^{
+        _networkRequestThread = [[NSThread alloc] initWithTarget:self selector:@selector(networkRequestThreadEntryPoint:) object:nil];
+        [_networkRequestThread start];
+    });
+    return _networkRequestThread;
+}
+```
+AFNetworking都是通过调用 [NSObject performSelector:onThread:..] 将这个任务扔到了后台线程的 RunLoop 中。
+
+```
+- (void)start {
+    [self.lock lock];
+    if ([self isCancelled]) {
+        [self performSelector:@selector(cancelConnection) onThread:[[self class] networkRequestThread] withObject:nil waitUntilDone:NO modes:[self.runLoopModes allObjects]];
+    } else if ([self isReady]) {
+        self.state = AFOperationExecutingState;
+        [self performSelector:@selector(operationDidStart) onThread:[[self class] networkRequestThread] withObject:nil waitUntilDone:NO modes:[self.runLoopModes allObjects]];
+    }
+    [self.lock unlock];
+}
+```
+
+我们在使用`NSURLConnection` 或者`NSStream`时，也需要考虑到RunLoop问题，因为默认情况下这两个类的对象生成后，都是在当前线程的`NSDefaultRunLoopMode`模式下执行任务。如果是在主线程，那么就会出现滚动ScrollView以及其子视图时，主线程的RunLoop切换到`UITrackingRunLoopMode`模式，那么`NSURLConnection`或者`NSStream`的回调就无法执行了。
+
+要解决这个问题，有两种方式：
+
+* 第一种方式是创建出`NSURLConnection`对象或者`NSStream`对象后，再调用 `- (void)scheduleInRunLoop:(NSRunLoop *)aRunLoop forMode:(NSRunLoopMode)mode`,设置RunLoopMode即可。需要注意的是`NSURLConnection`必须使用其初始化构造方法`- (nullable instancetype)initWithRequest:(NSURLRequest *)request delegate:(nullable id)delegate startImmediately:(BOOL)startImmediately`来创建对象，设置Mode才会起作用。
+
+* 第二种方式，就是所有的任务都在子线程中执行，并保证子线程的RunLoop正常运行即可（即上面AFNetworking的做法，因为主线程的RunLoop切换到`UITrackingRunLoopMode`，并不影响其他线程执行哪个mode中的任务，计算机CPU是在每一个时间片切换到不同的线程去跑一会，呈现出的多线程效果）。
+
+文中的示例代码都来自：[RunLoopDemos中的RunLoopDemo01](https://github.com/Haley-Wong/RunLoopDemos)
+
+Have Fun!
+
+
+
+
+
+
+
+ 
+  
+
+

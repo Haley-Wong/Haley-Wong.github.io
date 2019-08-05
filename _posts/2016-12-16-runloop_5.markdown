@@ -1,0 +1,176 @@
+---
+layout:     post
+title:      "RunLoop总结：RunLoop的应用场景（五）阻止App崩溃一次"
+date:       2016-12-06
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - RunLoop
+---
+
+今天要介绍的RunLoop应用场景感觉很酷炫，我们可能不常用到，但是对于做Crash 收集的 SDK可能会用得比较频繁吧。相比关于RunLoop 可以让应用起死回生，大家都听说过，可是怎么实现呢？今天我就来实际试验一下。
+
+## 资料
+
+* [sunnyxx线下分享RunLoop](http://v.youku.com/v_show/id_XODgxODkzODI0.html) (这是一份关于线下分享与讨论RunLoop的视频，备用地址：https://pan.baidu.com/s/1pLm4Vf9）
+* [漫谈iOS Crash收集框架](http://www.cocoachina.com/ios/20150701/12301.html)（简单介绍了下iOS 中Crash 的一些知识。）
+* [IOS程序异常crash捕获与拦截](http://www.sharejs.com/codes/objectc/5882) (我下面的Demo 就是在这部分代码上做了简化，以方便理解）
+
+## 原理
+iOS应用崩溃，常见的崩溃信息有`EXC_BAD_ACCESS`、`SIGABRT XXXXXXX`,而这里分为两种情况，一种是未被捕获的异常，我们只需要添加一个回调函数，并在应用启动时调用一个 API即可；另一种是直接发送的 `SIGABRT XXXXXXX`,这里我们也需要监听各种信号，然后添加回调函数。
+
+针对情况一，其实我们都见过。我们在收集App崩溃信息时，需要添加一个函数 `NSSetUncaughtExceptionHandler(&HandleException)`，参数 是一个回调函数，在回调函数里获取到异常的原因，当前的堆栈信息等保存到 dump文件，然后供下次打开App时上传到服务器。
+
+其实，我们在HandleException回调函数中，可以获取到当前的RunLoop，然后获取该RunLoop中的所有Mode，手动运行一遍。
+
+针对情况二，首先针对多种要捕获的信号，设置好回调函数，然后也是在回调函数中获取RunLoop，然后拿到所有的Mode，手动运行一遍。
+
+## 代码实现
+第一步，我创建了一个处理类，并添加一个单例方法。(代码见末尾的Demo）
+
+第二步，在单例中对象实例化时，添加 异常捕获 和 signal 处理的 回调函数。
+
+```
+- (void)setCatchExceptionHandler
+{
+    // 1.捕获一些异常导致的崩溃
+    NSSetUncaughtExceptionHandler(&HandleException);
+    
+    // 2.捕获非异常情况，通过signal传递出来的崩溃
+    signal(SIGABRT, SignalHandler);
+    signal(SIGILL, SignalHandler);
+    signal(SIGSEGV, SignalHandler);
+    signal(SIGFPE, SignalHandler);
+    signal(SIGBUS, SignalHandler);
+    signal(SIGPIPE, SignalHandler);
+}
+```
+第三步，分别实现 异常捕获的回调 和 signal 的回调。
+
+```
+void HandleException(NSException *exception)
+{
+    // 获取异常的堆栈信息
+    NSArray *callStack = [exception callStackSymbols];
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    [userInfo setObject:callStack forKey:kCaughtExceptionStackInfoKey];
+    
+    CrashHandler *crashObject = [CrashHandler sharedInstance];
+    NSException *customException = [NSException exceptionWithName:[exception name] reason:[exception reason] userInfo:userInfo];
+    [crashObject performSelectorOnMainThread:@selector(handleException:) withObject:customException waitUntilDone:YES];
+}
+
+void SignalHandler(int signal)
+{
+    // 这种情况的崩溃信息，就另某他法来捕获吧
+    NSArray *callStack = [CrashHandler backtrace];
+    NSLog(@"信号捕获崩溃，堆栈信息：%@",callStack);
+    
+    CrashHandler *crashObject = [CrashHandler sharedInstance];
+    NSException *customException = [NSException exceptionWithName:kSignalExceptionName
+                                                           reason:[NSString stringWithFormat:NSLocalizedString(@"Signal %d was raised.", nil),signal]
+                                                         userInfo:@{kSignalKey:[NSNumber numberWithInt:signal]}];
+    
+    [crashObject performSelectorOnMainThread:@selector(handleException:) withObject:customException waitUntilDone:YES];
+}
+```
+
+第四步，添加让应用起死回生的 RunLoop 代码
+
+```
+- (void)handleException:(NSException *)exception
+{
+    NSString *message = [NSString stringWithFormat:@"崩溃原因如下:\n%@\n%@",
+                         [exception reason],
+                         [[exception userInfo] objectForKey:kCaughtExceptionStackInfoKey]];
+    NSLog(@"%@",message);
+    
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"程序崩溃了"
+                                                    message:@"如果你能让程序起死回生，那你的决定是？"
+                                                   delegate:self
+                                          cancelButtonTitle:@"崩就蹦吧"
+                                          otherButtonTitles:@"起死回生", nil];
+    [alert show];
+    
+    CFRunLoopRef runLoop = CFRunLoopGetCurrent();
+    CFArrayRef allModes = CFRunLoopCopyAllModes(runLoop);
+    
+    while (!ignore) {
+        for (NSString *mode in (__bridge NSArray *)allModes) {
+            CFRunLoopRunInMode((CFStringRef)mode, 0.001, false);
+        }
+    }
+    
+    CFRelease(allModes);
+    
+    NSSetUncaughtExceptionHandler(NULL);
+    signal(SIGABRT, SIG_DFL);
+    signal(SIGILL, SIG_DFL);
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGFPE, SIG_DFL);
+    signal(SIGBUS, SIG_DFL);
+    signal(SIGPIPE, SIG_DFL);
+    
+    if ([[exception name] isEqual:kSignalExceptionName]) {
+        kill(getpid(), [[[exception userInfo] objectForKey:kSignalKey] intValue]);
+    } else {
+        [exception raise];
+    }
+}
+```
+因为我这里弄了一个AlertView弹窗，所以必须要回到主线程来处理。
+
+实际上，RunLoop 相关的代码：
+
+```
+ CFRunLoopRef runLoop = CFRunLoopGetCurrent();
+    CFArrayRef allModes = CFRunLoopCopyAllModes(runLoop);
+    
+    while (!ignore) {
+        for (NSString *mode in (__bridge NSArray *)allModes) {
+            CFRunLoopRunInMode((CFStringRef)mode, 0.001, false);
+        }
+    }
+    
+    CFRelease(allModes);
+```
+
+完全可以写在 上面的 HandleException 回调 和 SignalHandler回调中。
+
+## 第五步，写一段会导致崩溃的代码
+
+我是在ViewController 中添加了一个点击事件，弄了一个数组越界的Bug:
+
+```
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
+{
+    NSArray *array =[NSArray array];
+    NSLog(@"%@",[array objectAtIndex:1]);
+}
+```
+
+动态效果图：
+
+
+![遇到数组越界，应用依然没崩溃](/img/blogs/runloop_5/img_01.webp)
+
+sunnyxx 称之为回光返照，为什么呢？
+
+我再一次点击视图，应用依然还是崩溃了，只能防止第一次崩溃。
+
+我测试了，确实是第二次应用崩溃，未能起死回生。
+
+文中的示例代码都来自：[RunLoopDemos中的RunLoopDemo04](https://github.com/Haley-Wong/RunLoopDemos)
+
+Have Fun!
+
+
+
+
+
+
+
+ 
+  
+
+
