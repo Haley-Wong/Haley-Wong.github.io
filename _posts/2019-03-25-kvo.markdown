@@ -1,0 +1,494 @@
+---
+layout:     post
+title:      "iOS中的KVO底层实现"
+date:       2019-03-25
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - Tools
+---
+
+
+KVO是Key-Value-Observer的缩写，使用的是观察者模式。底层实现机制都是isa-swizzing，就是在底层调用`object_setClass`函数，将对象的isa指向的Class偷偷换掉。
+
+而观察者模式就是 目标对象（被观察的对象）管理所有依赖于它的观察者对象，并在它自身的状态改变时主动通知观察者对象。而主动通知观察者对象这个实现一般都是调用观察者对象提供的接口。这样就可以将目标对象和观察者对象松散偶合。
+
+iOS 中的实现就更简单了，利用`respondsToSelector`来判断观察者是否实现了指定的方法，就可以通知观察者对象了。
+
+KVO的实现依赖于runtime，它需要动态获取到class，也需要动态的修改class，还需要动态判断是否实现了某些方法等。
+
+> 原理：当第一次观察某个类的实例对象时，会动态创建一个该类的子类，然后将该对象的isa修改为这个新的子类的Class，重写被观察的属性的 set方法，然后在修改属性前后，调用观察者的接口来通知观察者。
+
+## 1.GNUstep中的KVO实现
+
+GNUstep是Objective-C中大部分实现的前身，虽然OC在GNUstep的基础上做了许多更新和优化，但是很多基本逻辑思路是一致的。而KVO的源码又没有开源，所以我们就只能先从GNUstep的实现中来参考一二了。
+
+[GNUstep Core Base]（http://wwwmain.gnustep.org/resources/downloads.php?site=ftp%3A%2F%2Fftp.gnustep.org%2Fpub%2Fgnustep%2F） 中有Foundation框架的实现。虽然可能与OC的实现不太一样，但是总体思路是一样的。
+
+我们在下载的开源工程中的【base/Headers/Foundation/NSKeyValueObserving.h】中可以看到KVO相关的头文件。
+
+这个`NSKeyValueObserving.h`中暴露的API与Objective-C中Foudation中`NSKeyValueObserving.h`中的API基本上是一致的。
+
+都是为NSObjet增加了几个Category，分别放了KVO要实现的键值观察方法和添加观察者、移除观察者等API方法。
+
+我们可以在【base/Source/Foundation/KVO】目录下找到`NSKeyValueObserving.m`。
+
+### 1.1 - addObserver: forKeyPath: options: context: 的实现
+
+先来看一下源码，由于是GNUstep的开源框架，所以部分类型还是GS前缀，为了便于理解，我已添加一些注释。
+
+```
+- (void) addObserver: (NSObject*)anObserver
+          forKeyPath: (NSString*)aPath
+             options: (NSKeyValueObservingOptions)options
+             context: (void*)aContext
+{
+    GSKVOInfo             *info;
+    GSKVOReplacement      *r;
+    NSKeyValueObservationForwarder *forwarder;
+    NSRange               dot;
+    
+    // 1.初始化一些全局变量
+    setup();
+    // 2.使用递归锁保证线程安全
+    [kvoLock lock];
+    // 3.从全局NSMapTable中获取某个类的KVO子类Class
+    r = replacementForClass([self class]);
+    
+    // 4.从全局NSMapTable中获取某个类的观察者信息对象
+    info = (GSKVOInfo*)[self observationInfo];
+    
+    // 5.如果不存在就创建一个观察者信息对象实例。
+    if (info == nil)
+    {
+        info = [[GSKVOInfo alloc] initWithInstance: self];
+        // 5.1 保存到全局NSMapTable中。
+        [self setObservationInfo: info];
+        // 5.2 将被观察的对象的isa修改为新的KVO子类Class
+        object_setClass(self, [r replacement]);
+    }
+    
+    // 6.调用info实例方法处理观察
+    dot = [aPath rangeOfString:@"."];
+    if (dot.location != NSNotFound)
+    {
+        forwarder = [[NSKeyValueObservationForwarder alloc]
+                     initWithKeyPath: aPath
+                     ofObject: self
+                     withTarget: anObserver
+                     context: aContext];
+        [info addObserver: anObserver
+               forKeyPath: aPath
+                  options: options
+                  context: forwarder];
+    }
+    else
+    {
+        [r overrideSetterFor: aPath];
+        [info addObserver: anObserver
+               forKeyPath: aPath
+                  options: options
+                  context: aContext];
+    }
+    
+    // 7.递归锁解锁
+    [kvoLock unlock];
+}
+```
+
+**setup()**
+
+`setup()`函数中主要是对一些全局变量的初始化，当然了内部也加了递归锁，以及全局变量是否为空的判断。
+
+```
+// 全局递归锁
+static NSRecursiveLock	*kvoLock = nil;
+static NSMapTable	 *classTable = 0;
+static NSMapTable	 *infoTable = 0;
+static NSMapTable       *dependentKeyTable;
+static Class		baseClass;
+static id               null;
+
+// 这个是在GSLock中定义的
+NSRecursiveLock *gnustep_global_lock = nil;
+
+static inline void
+setup()
+{
+  if (nil == kvoLock)
+    {
+      [gnustep_global_lock lock];
+      if (nil == kvoLock)
+	{
+	  kvoLock = [NSRecursiveLock new];
+	  null = [[NSNull null] retain];
+	  classTable = NSCreateMapTable(NSNonOwnedPointerMapKeyCallBacks,
+	    NSNonOwnedPointerMapValueCallBacks, 128);
+	  infoTable = NSCreateMapTable(NSNonOwnedPointerMapKeyCallBacks,
+	    NSNonOwnedPointerMapValueCallBacks, 1024);
+	  dependentKeyTable = NSCreateMapTable(NSNonOwnedPointerMapKeyCallBacks,
+	      NSOwnedPointerMapValueCallBacks, 128);
+	  baseClass = NSClassFromString(@"GSKVOBase");
+	}
+      [gnustep_global_lock unlock];
+    }
+}
+```
+以上源代码基本上都在`NSKeyValueObserving.m`的顶部。
+
+> NSMapTable 是iOS 是iOS 6 新增的容器类，功能类似于NSDictionary。一般的字典，会持有key 和value，导致对象的引用计数增加。但是NSMapTable可以分别设置key 和value的持有情况，如果对key 和 value是弱引用，当key 和 value被释放销毁后，NSMapTable中对应的数据也会被清除。
+
+**replacementForClass()**
+
+这是一个全局静态函数，作用是从全局classTable中获取已经创建的某个类的KVO子类。
+
+```
+static GSKVOReplacement *
+replacementForClass(Class c)
+{
+  GSKVOReplacement *r;
+  // 0.方式全局变量没有初始化
+  setup();
+  // 1.使用递归锁锁住
+  [kvoLock lock];
+  // 2.从全局classTable中获取GSKVOReplacement实例
+  r = (GSKVOReplacement*)NSMapGet(classTable, (void*)c);
+  // 3.如果不存在，就创建一个保存到全局classTable中
+  if (r == nil)
+    {
+      r = [[GSKVOReplacement alloc] initWithClass: c];
+      NSMapInsert(classTable, (void*)c, (void*)r);
+    }
+    // 4.释放递归锁
+  [kvoLock unlock];
+  return r;
+}
+```
+
+而`GSKVOReplacement`中其实主要存储的是原始的Class以及对象被更新后的Class和被观察的keys。
+
+```
+@interface	GSKVOReplacement : NSObject
+{
+  Class         original;       /* The original class */
+  Class         replacement;    /* The replacement class */
+  NSMutableSet  *keys;          /* The observed setter keys */
+}
+- (id) initWithClass: (Class)aClass;
+- (void) overrideSetterFor: (NSString*)aKey;
+- (Class) replacement;
+@end
+```
+
+**GSKVOInfo**
+
+全局infoTable中存储的就是该类型的实例对象。
+
+```
+@interface	GSKVOInfo : NSObject
+{
+  NSObject	        *instance;	// Not retained.
+  NSRecursiveLock	        *iLock;
+  NSMapTable	        *paths;
+}
+- (GSKVOPathInfo *) lockReturningPathInfoForKey: (NSString *)key;
+- (void*) contextForObserver: (NSObject*)anObserver ofKeyPath: (NSString*)aPath;
+- (id) initWithInstance: (NSObject*)i;
+- (NSObject*) instance;
+- (BOOL) isUnobserved;
+- (void) unlock;
+
+@end
+```
+
+**-observationInfo和 -setObservationInfo:**
+
+这两个函数主要是从全局infoTable中存取对象而已，比较简单就不做赘述了。
+
+```
+- (void*) observationInfo
+{
+  void	*info;
+
+  setup();
+  [kvoLock lock];
+  info = NSMapGet(infoTable, (void*)self);
+  IF_NO_GC(AUTORELEASE(RETAIN((id)info));)
+  [kvoLock unlock];
+  return info;
+}
+
+- (void) setObservationInfo: (void*)observationInfo
+{
+  setup();
+  [kvoLock lock];
+  if (observationInfo == 0)
+    {
+      NSMapRemove(infoTable, (void*)self);
+    }
+  else
+    {
+      NSMapInsert(infoTable, (void*)self, observationInfo);
+    }
+  [kvoLock unlock];
+}
+```
+
+**object_setClass(self, [r replacement])**
+
+这里的`[r replacement]`其实仅仅是获取到GSKVOReplacement内的replacement成员变量的值而已。而生成replacement的过程在init函数中。
+
+```
+- (id) initWithClass: (Class)aClass
+{
+    original = aClass;
+    /*
+     * Create subclass of the original, and override some methods
+     * with implementations from our abstract base class.
+     */
+    NSString *superName = NSStringFromClass(original);
+    NSString *name = [@"GSKVO" stringByAppendingString: superName];
+    // 这里利用runtime动态创建一个集成自original的GSKVOxxx类
+    NSValue *template = GSObjCMakeClass(name, superName, nil);
+    // 将新的GSKVOXXX类，注册到系统中
+    GSObjCAddClasses([NSArray arrayWithObject: template]);
+    replacement = NSClassFromString(name);
+    // 将baseClass(GSKVOBase)中的API添加到replacement上。
+    GSObjCAddClassBehavior(replacement, baseClass);
+    keys = [NSMutableSet new];
+    return self;
+}
+```
+
+这里比较重要的其实是`GSObjCAddClassBehavior(replacement, baseClass)`，因为`GSKVOBase`中一共也没几个API，主要是实现了如下几个API:
+
+```
+- (void) dealloc
+{
+  // Turn off KVO for self ... then call the real dealloc implementation.
+  [self setObservationInfo: nil];
+  object_setClass(self, [self class]);
+  [self dealloc];
+  GSNOSUPERDEALLOC;
+}
+
+- (Class) class
+{
+  return class_getSuperclass(object_getClass(self));
+}
+
+- (void) setValue: (id)anObject forKey: (NSString*)aKey
+{
+  Class		c = [self class];
+  void		(*imp)(id,SEL,id,id);
+
+  imp = (void (*)(id,SEL,id,id))[c instanceMethodForSelector: _cmd];
+
+  if ([[self class] automaticallyNotifiesObserversForKey: aKey])
+    {
+      [self willChangeValueForKey: aKey];
+      imp(self,_cmd,anObject,aKey);
+      [self didChangeValueForKey: aKey];
+    }
+  else
+    {
+      imp(self,_cmd,anObject,aKey);
+    }
+}
+
+- (void) takeStoredValue: (id)anObject forKey: (NSString*)aKey
+{
+  Class		c = [self class];
+  void		(*imp)(id,SEL,id,id);
+
+  imp = (void (*)(id,SEL,id,id))[c instanceMethodForSelector: _cmd];
+
+  if ([[self class] automaticallyNotifiesObserversForKey: aKey])
+    {
+      [self willChangeValueForKey: aKey];
+      imp(self,_cmd,anObject,aKey);
+      [self didChangeValueForKey: aKey];
+    }
+  else
+    {
+      imp(self,_cmd,anObject,aKey);
+    }
+}
+
+- (void) takeValue: (id)anObject forKey: (NSString*)aKey
+{
+  Class		c = [self class];
+  void		(*imp)(id,SEL,id,id);
+
+  imp = (void (*)(id,SEL,id,id))[c instanceMethodForSelector: _cmd];
+
+  if ([[self class] automaticallyNotifiesObserversForKey: aKey])
+    {
+      [self willChangeValueForKey: aKey];
+      imp(self,_cmd,anObject,aKey);
+      [self didChangeValueForKey: aKey];
+    }
+  else
+    {
+      imp(self,_cmd,anObject,aKey);
+    }
+}
+
+- (void) takeValue: (id)anObject forKeyPath: (NSString*)aKey
+{
+  Class		c = [self class];
+  void		(*imp)(id,SEL,id,id);
+
+  imp = (void (*)(id,SEL,id,id))[c instanceMethodForSelector: _cmd];
+
+  if ([[self class] automaticallyNotifiesObserversForKey: aKey])
+    {
+      [self willChangeValueForKey: aKey];
+      imp(self,_cmd,anObject,aKey);
+      [self didChangeValueForKey: aKey];
+    }
+  else
+    {
+      imp(self,_cmd,anObject,aKey);
+    }
+}
+
+- (Class) superclass
+{
+  return class_getSuperclass(class_getSuperclass(object_getClass(self)));
+}
+```
+这几个函数的实现都很简单，主要作用就是为了让开发者感知不到GSKVOxxx类的存在，因为当开发者在使用这些函数时，取到的还是original类的信息。
+
+接下来，分两种情况：
+
+* 1.如果要观察的就是对象的属性，则只需要重写set方法即可。
+* 2.如果要观察的是成员变量的属性，则需要构造一个`NSKeyValueObservationForwarder`对象，再调用`GSKVOInfo`中的`- addObserver: forKeyPath: options: context:`函数。
+
+**情况1**
+
+`GSKVOReplacement`中的`overrideSetterFor`实现，也就是拼接出`setXxx:`或者`_setXxx:`，然后获取到SEL，最后将`GSKVOSetter`中针对各种类型的setter imp 赋值给sel。
+
+关于各种类型的属性的set方法的实现，已经集中在`GSKVOSetter`中实现了。另外，赋值使用的是如下API：`class_addMethod(replacement, sel, imp, [sig methodType])`。
+
+最后，调用`GSKVOInfo`中的`- addObserver: forKeyPath: options: context:`函数。调用该API目的有两个：
+
+* 1.将keyPath 信息保存到`GSKVOInfo`中的paths中，方便以后直接从内存中取。
+* 2.如果kvo设置的options中包含initial值，需要将初始化的值返回给观察者。
+
+**情况2**
+
+这种情况的实现，其实都在如下函数中：
+
+```
+- (id) initWithKeyPath: (NSString *)keyPath
+              ofObject: (id)object
+            withTarget: (id)aTarget
+               context: (void *)context
+{
+  NSString * remainingKeyPath;
+  NSRange dot;
+
+  target = aTarget;
+  keyPathToForward = [keyPath copy];
+  contextToForward = context;
+
+  dot = [keyPath rangeOfString: @"."];
+  if (dot.location == NSNotFound)
+    {
+      [NSException raise: NSInvalidArgumentException
+        format: @"NSKeyValueObservationForwarder was not given a key path"];
+    }
+  keyForUpdate = [[keyPath substringToIndex: dot.location] copy];
+  remainingKeyPath = [keyPath substringFromIndex: dot.location + 1];
+  observedObjectForUpdate = object;
+  [object addObserver: self
+           forKeyPath: keyForUpdate
+              options: NSKeyValueObservingOptionNew
+                     | NSKeyValueObservingOptionOld
+              context: target];
+  dot = [remainingKeyPath rangeOfString: @"."];
+  if (dot.location != NSNotFound)
+    {
+      child = [[NSKeyValueObservationForwarder alloc]
+        initWithKeyPath: remainingKeyPath
+	       ofObject: [object valueForKey: keyForUpdate]
+	     withTarget: self
+		context: NULL];
+      observedObjectForForwarding = nil;
+    }
+  else
+    {
+      keyForForwarding = [remainingKeyPath copy];
+      observedObjectForForwarding = [object valueForKey: keyForUpdate];
+      [observedObjectForForwarding addObserver: self
+                                    forKeyPath: keyForForwarding
+                                       options: NSKeyValueObservingOptionNew
+                                              | NSKeyValueObservingOptionOld
+                                       context: target];
+      child = nil;
+    }
+
+  return self;
+}
+```
+举个例子，如果我们要观察的Parent中的成员变量child的height属性，keyPath其实是`child.height`。
+
+那上面该方法做的事情，其实是先创建一个KVO监听的是其属性child的变更，然后再执行child的KVO，监听`child`对象的成员变量height的变更。
+
+这里child的观察者是`NSKeyValueObservationForwarder`对象，然后在内部的`- observeValueForKeyPath:ofObject:change:context:`中调用上一级的对象的`- observeValueForKeyPath:ofObject:change:context:`，这样就可以将要监听的属性的变更事件一级一级的传出去。
+
+## 2.苹果中的KVO实现
+
+我这里创建了一个`HLPerson`类：
+
+```
+@interface HLPerson : NSObject
+
+@property (nonatomic, assign) int height;
+
+@end
+```
+
+然后在viewController的viewDidLoad中初始化该person：
+
+```
+    self.person = [[HLPerson alloc] init];
+    NSLog(@"Class:%@", object_getClass(self.person));
+    NSLog(@"person.class:%@", self.person.class);
+    [self.person addObserver:self forKeyPath:@"height" options:NSKeyValueObservingOptionNew context:nil];
+    NSLog(@"Class:%@", object_getClass(self.person));
+    NSLog(@"person.class:%@", self.person.class);
+    
+// 输出结果为：
+Class:HLPerson
+person.class:HLPerson
+Class:NSKVONotifying_HLPerson
+person.class:HLPerson
+```
+
+由此可见，苹果中的实现是构造出了一个`NSKVONotifying_HLPerson`，虽然跟GNUstep中的前缀不太一样，但是实现逻辑应该是差不多的。
+
+## 3.总结
+虽然结论是猜测的，但是可信度应该是非常高的。KVO的实现原理，也就是对象执行`- addObserver: forKeyPath: options: context: `时，内部实现如下：
+
+* 1.如果KVO需要的全局变量未初始化，先初始化这些全局变量。
+* 2.从全局classTable中获取已转换过的GSKVOReplacement对象，如果不存在，则创建一个保存到classTable中。
+* 3.从全局infoTable中获取观察者信息GSKVOInfo对象，如果不存在，则创建一个，并保存到全局infoTable中，并将GSKVOReplacement中动态创建的class，赋值给对象。动态创建的Class会被重写`setValue:forKey`等函数。在真正执行赋值操作前后插入willChange 和 didChange 方法。
+* 4.重写对象的set方法，也是在执行赋值操作前后插入willChange 和 didChange 方法。
+* 5.调用GSKVOInfo中的`- observeValueForKeyPath:ofObject:change:context:`。
+* 6.当对象的属性真的被修改时，就可以在willChange 和 didChange中调用 `- observeValueForKeyPath:ofObject:change:context:` 告知观察对象了。
+
+Have Fun!
+
+
+
+
+
+
+
+
+ 
+  
+
+

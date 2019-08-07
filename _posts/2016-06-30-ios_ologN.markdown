@@ -1,6 +1,6 @@
 ---
 layout:     post
-title:      "算法之路（二）呈现O(logN)型的三个算法"
+title:      "算法之路---呈现O(logN)型的三个算法"
 date:       2016-06-30
 author:     "Haley_Wong"
 catalog:    true

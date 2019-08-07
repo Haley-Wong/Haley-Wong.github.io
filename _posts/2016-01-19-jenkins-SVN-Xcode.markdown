@@ -5,7 +5,7 @@ date:       2016-01-19
 author:     "Haley_Wong"
 catalog:    true
 tags:
-    - Tools
+    - Jenkins
 ---
 
 每一次新版本要发布，都被测试部门催成狗，测试部也耐不住了，想自己打包，研发只管提交代码，听到这个消息，还是很开心的，终于不用打包了。跟同事折腾Jenkins三天，终于正常导出ipa包了！！

@@ -1,6 +1,6 @@
 ---
 layout:     post
-title:      "算法之路（一）----求最大子序列"
+title:      "算法之路---求最大子序列"
 date:       2016-06-24
 author:     "Haley_Wong"
 catalog:    true

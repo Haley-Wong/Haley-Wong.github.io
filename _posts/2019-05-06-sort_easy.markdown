@@ -1,0 +1,190 @@
+---
+layout:     post
+title:      "算法之路---排序算法（简单排序）"
+date:       2019-05-06
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - 算法
+---
+
+
+排序算法在各种语言中都有已经封装好的API可使用了。但是排序算法内部怎么实现的？有哪些常用的排序算法我们还是需要了解一下的。
+
+#### 排序的稳定性 
+
+假设K<sub>i</sub> = K<sub>j</sub>(1≤ i ≤ n, 1≤ j ≤ n)，且在排序前的序列中r<sub>i</sub>领先于r<sub>j</sub>(即i < j)。如果排序后r<sub>i</sub>仍领先于r<sub>j</sub>，则称所用的排序算法是稳定的；反之，若使得排序后的序列中r<sub></sub>仍领先于r<sub>i</sub>，则称使用的排序算法是不稳定的。
+
+简单说来，就是待排序的元素中，如果有两个值相等，排序前是a在前，b在后，排序后仍然是a在前，b在后，那么这个排序算法就是稳定的。如果排序后是b在前，a在后，那么这个排序算法就是不稳定的。
+
+#### 内排序和外排序
+
+根据在排序过程中待排序的记录是否全部都被放置在内存中，排序算法又被分为内排序和外排序。
+
+内排序是在排序整个过程中，待排序的所有记录全部被放置在内存中。外排序是由于排序的记录个数太多，不能同时放置在内存，整个排序过程需要在内外存之间多次交换数据才能进行。
+
+根据排序过程中借助的主要操作不同，内排序可以分为：插入排序、交换排序、选择排序和归并排序。
+
+## 简单排序算法
+按照算法的复杂度可以分为两大类，其中冒泡排序、简单选择排序和直接插入排序属于简单算法，而希尔排序、堆排序、归并排序、快速排序属于改进算法。
+
+简单排序算法的时间复杂度都是O(n<sup>2</sup>)，在编程的发展中，曾经一度认为排序算法，无法再精进。
+
+这里就先记录一下三种简单排序算法。
+
+### 冒泡排序
+`冒泡排序(Bubble Sort)` 是一种交换排序，它的基本思想是：两两比较相邻记录的关键字，如果反序则交换，直到没有反序的记录为止。
+
+```
+// 按照从小到大排序
+// NSArray *numbers = @[@(0),@(5),@(4),@(5),@(7),@(8),@(9),@(2),@(3)];
+- (NSArray *)bubbleSortWithArray:(NSArray *)array
+{
+    NSMutableArray *sortedArray = [NSMutableArray arrayWithArray:array];
+    int count = (int)sortedArray.count;
+    int i,j;
+    // 因为数组的下标是从 0 至 count - 1;
+    for (i = 0; i < count; i++) {
+        // 因为数组下标是从 0 至 count - 1，因为j+1 最大为count -1，所以j最大为count -2
+        for (j = count - 2; j >= i; j--) {
+            if ([sortedArray[j] intValue] > [sortedArray[j + 1] intValue]) {
+                [sortedArray exchangeObjectAtIndex:j withObjectAtIndex:j+1];
+            }
+        }
+    }
+    return [sortedArray copy];
+}
+```
+上面这种算法是外层从0开始递增遍历，内层是从count-1 到i，递减遍历，可以理解为一次将最小、倒数第二小、倒数第三小....
+
+依次至于第0、第1、第2.....的位置。
+
+还可以这样写：
+```
++ (NSMutableArray *)bubbleSort:(NSMutableArray *)randomNumbers
+{
+    if (randomNumbers.count == 0) {
+        return randomNumbers;
+    }
+    
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+    
+    for (int i = 0; i < randomNumbers.count; i++) {
+        for (int j = 0; j < randomNumbers.count - i - 1; j++) {
+            if ([randomNumbers[j] intValue] > [randomNumbers[j + 1] intValue]) {
+                [randomNumbers exchangeObjectAtIndex:j withObjectAtIndex:j+1];
+            }
+        }
+    }
+    
+    return randomNumbers;
+}
+```
+这种写法是外层从0开始递增遍历，内层也是从0开始递增遍历，依次将最大、第2大、第3大......的元素依次放置到最后、倒数第二后、倒数第三后......的位置。
+
+当然以上两种做法还可以针对某些特殊数据做一些优化。比如，如果数据只有最后两个元素或者只有最开始两个元素需要互换。
+
+那么上述算法还可以再做一些优化。
+
+如果，某次选择排序时，如果没有互换元素，这说明所有元素都已经是有序的了，以后的循环就不用再次互换了。
+```
++ (NSMutableArray *)bubbleSort2:(NSMutableArray *)randomNumbers
+{
+    if (randomNumbers.count == 0) {
+        return randomNumbers;
+    }
+    
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+    
+    BOOL flag = YES;
+    for (int i = 0; i < randomNumbers.count && flag; i++) {
+        flag = NO;
+        for (int j = 0; j < randomNumbers.count - i - 1; j++) {
+            if ([randomNumbers[j] intValue] > [randomNumbers[j + 1] intValue]) {
+                [randomNumbers exchangeObjectAtIndex:j withObjectAtIndex:j+1];
+                flag = YES;
+            }
+        }
+    }
+    
+    return randomNumbers;
+}
+```
+### 选择排序
+`选择排序（Selection Sort）`就是通过 n - i 次关键字间的比较，从n - i + 1个记录中选出关键字最小的记录，并和 第 i (1≤ i ≤ n)个记录交换。
+
+```
++ (NSMutableArray *)selectSort:(NSMutableArray *)randomNumbers
+{
+    if (randomNumbers.count == 0) {
+        return randomNumbers;
+    }
+    
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+    
+    int min;
+    for (int i = 0; i < randomNumbers.count; i ++) {
+        min = i;
+        for (int j = i + 1; j < randomNumbers.count; j++) {
+            if ([randomNumbers[min] intValue] > [randomNumbers[j] intValue]) {
+                min = j;
+            }
+        }
+        if (i != min) {
+            [randomNumbers exchangeObjectAtIndex:i withObjectAtIndex:min];
+        }
+    }
+    
+    return randomNumbers;
+}
+```
+### 插入排序
+`直接插入排序（Insertion Sort）`的基本操作是将一个记录插入到已经排好序的有序表中，从而得到一个新的、记录数增1的有序表。
+
+```
++ (NSMutableArray *)insertSort:(NSMutableArray *)randomNumbers
+{
+    if (randomNumbers.count == 0) {
+        return randomNumbers;
+    }
+    
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+    
+    NSUInteger count = randomNumbers.count;
+    for (int i = 0; i < count; i++) {
+        id temp = randomNumbers[i];
+        int j;
+        for (j = i - 1; j >= 0 && [randomNumbers[j]  intValue] > [temp intValue]; j--) {
+            randomNumbers[j + 1] = randomNumbers[j];
+        }
+        randomNumbers[j + 1] = temp;
+    }
+    return randomNumbers;
+}
+```
+
+Have Fun!
+
+
+
+
+
+
+
+
+ 
+  
+
+

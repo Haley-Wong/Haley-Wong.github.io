@@ -1,6 +1,6 @@
 ---
 layout:     post
-title:      "算法之路（三）----查找斐波纳契数列中第 N 个数"
+title:      "算法之路---查找斐波纳契数列中第 N 个数"
 date:       2016-11-02
 author:     "Haley_Wong"
 catalog:    true

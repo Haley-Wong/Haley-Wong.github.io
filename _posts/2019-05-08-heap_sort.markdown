@@ -1,0 +1,189 @@
+---
+layout:     post
+title:      "算法之路---堆排序"
+date:       2019-05-08
+author:     "Haley_Wong"
+catalog:    true
+tags:
+    - 算法
+---
+
+[堆排序](https://baike.baidu.com/item/%E5%A0%86%E6%8E%92%E5%BA%8F)是利用堆这种数据结构而设计的一种排序算法，堆排序是一种选择排序，它的最坏，最好，平均时间复杂度均为O(nlogn)，它也是不稳定排序。
+
+而堆是具有以下性质的完全二叉树：每个结点的值都大于或等于其左右孩子结点的值，称为大顶堆；或者每个结点的值都小于或等于其左右孩子结点的值，称为小顶堆。
+
+![image.png](/img/blogs/heap_sort/img_01.webp)
+
+同时，我们对堆中的结点从上之下，从左至右进行编号，将这种逻辑结构映射到数组中就是下面这个样子：
+
+![image.png](/img/blogs/heap_sort/img_02.webp)
+
+该数组从逻辑上讲就是一个堆结构，我们用简单的公式来描述一下堆的定义就是：
+
+>大顶堆：arr[i] >= arr[2i+1] && arr[i] >= arr[2i+2]  
+小顶堆：arr[i] <= arr[2i+1] && arr[i] <= arr[2i+2] 
+
+而如果我们要将一组数据进行升序排序，就可以使用大顶堆，如果要将数据进行降序排序，则使用小顶堆。 
+
+## 节点与左右子节点索引的推导
+
+我们都知道堆是二叉树结构，而二叉树的第一层节点是2<sup>0</sup>，第二层节点数是2<sup>1</sup>，第三层节点数是2<sup>2</sup>......
+
+所以，堆每一层的数据个数其实是个等比数列，该等比数列的总和是 2<sup>0</sup> + 2<sup>1</sup> + 2<sup>2</sup> + ..... + 2<sup>n</sup>。
+
+根据等比数列的公式：
+![image.png](/img/blogs/heap_sort/img_03.webp)
+
+可以求出和 S<sub>n</sub> = 2<sup>n</sup> - 1，一个n层的堆最大有2<sup>n</sup> - 1个元素。
+
+由于数组的下标是从0开始，因此第k层的最后一个节点下标为：2<sup>k</sup>-2，k层第一个节点为2<sup>k-1</sup>-1。
+
+假如某父节点是第k层的第m个节点，那么其下标应该是2<sup>k-1</sup> -2 + m。
+
+而左子节点就是第k+1层第2 * (m-1) + 1个节点，其的下标应该是2<sup>k</sup>-2 + (m-1) * 2 + 1 = 2<sup>k</sup>+ (m-2) * 2 + 1。
+
+而右子节点就是第k+1层第2 * (m-1) + 2个节点，其下标应该是2<sup>k</sup>-2 + (m-1) * 2 + 2 = 2<sup>k</sup>+ (m-2) * 2 + 2。
+
+这里，如果第k层，第m个节点的下标，我们赋值给i = 2<sup>k-1</sup> -2 + m，可以看出2i + 1，正好就等于2<sup>k</sup>+ (m-2) * 2 + 1，而2i+2就正好等于2<sup>k</sup>+ (m-2) * 2 + 2。
+
+最后得出结论：第i个元素的左右子子节点分别是2i+1 和2i+2。
+
+## 堆排序的基本思想和步骤
+
+将待排序的序列（一般是数组）构造成一个大顶堆，此时，整个序列的最大值就是堆顶的根节点。将其与末尾元素进行交换，此时末尾就为最大值。然后将剩余n-1个元素重新构造成一个堆，这样会得到n个元素的次小值。如此反复执行，便能得到一个有序序列了。
+
+> 一个堆结构中，最后一个非叶子节点的索引，可以用`array.count / 2 - 1`来求出。
+
+为什么最后一个父节点的下标是`array.count /2 - 1`呢？
+
+在上面，我们论证了父节点与左右子节点的下标关系，而堆的结构其实是完全二叉树，也就是说去掉最后一层的叶子节点，其他节点所组成的二叉树，一定是满二叉树。所以最后一个叶子节点要么是左子节点，要么是右子节点。
+
+而如果最后一个节点的是左子节点，那么假设其父节点所以是i，那么其下标是2i+1，而总的节点是array.count，我们知道下标是从0开始的，所以2i+1 = array.count -1。所以i的值就是(array.count - 2)/2，即array.count/2 -1。排除子节点所在一层的所有节点总数是2<sup>k</sup>-1，如果k大于0，则2<sup>k</sup>-1为奇数，而最后一层因为最后只有一个左子节点，所以最后一层也必定是奇数，两个奇数相加为偶数，所以array.count为偶数，能被2整除，因此array.count/2 -1就是最后一个父节点的下标。
+
+如果最后一个节点是右子节点，假设其父节点是i，那么其下标是2i+2，而总的节点是array.count，所以2i+2 = array.count -1。所以i的值 array.count / 2 - 3/2。此时array.count 肯定就是奇数了，array.count 无法被 2整除。此时如果array.count /2 可以取小数位的话，array.count / 2 - 3/2也正好是整数，由于array.count /2 是向下取整，因此3/2也去掉一个0.5就是要取的父节点的下标拉，也就是array.count /2 - 1。
+
+由此得证，最后一个父节点的下标为array.count /2 - 1。
+
+## 堆排序的实现
+根据上述的基本步骤和思想，我们来实现一下堆排序(注意这是错误的实现)：
+
+```
+/**
+   堆排序
+   
+   @param randomNumbers 随机数组
+   @return 排序后的数组
+   */
++ (NSMutableArray *)heapSort0:(NSMutableArray *)randomNumbers
+{
+    if (randomNumbers.count <= 1) {
+        return randomNumbers;
+    }
+    
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+    
+    for (int i = 0; i < randomNumbers.count; i++) {
+        [self p_heapSort:randomNumbers count:randomNumbers.count - i];
+    }
+    
+    return randomNumbers;
+}
+
+/// 构造大顶堆
++ (void)p_heapSort:(NSMutableArray *)randomNumbers count:(NSUInteger)currentCount
+{
+    // 1.构造一个大顶堆
+    for (int i = (int)currentCount / 2 - 1; i >= 0; i --) {
+        NSUInteger son = 2 * i + 1;
+        // 1.1 判断是否存在右子节点，以及右子节点是否比左子节点大
+        if ((son + 1) < currentCount && [randomNumbers[son] intValue] < [randomNumbers[son + 1] intValue] ) {
+            son ++;
+        }
+        // 1.2 父节点与最大的子节点比较
+        if ([randomNumbers[i] intValue] < [randomNumbers[son] intValue]) {
+            [randomNumbers exchangeObjectAtIndex:i withObjectAtIndex:son];
+        }
+    }
+    // 2.交换第0个元素和最后一个元素
+    [randomNumbers exchangeObjectAtIndex:currentCount - 1 withObjectAtIndex:0];
+}
+
+```
+
+很明显，这里的时间复杂度必然是O(n<sup>2</sup>)，实现的不太对。仔细分析后得出，只有第一次构造大顶堆是需要从 array.count /2 - 1 开始倒着循环至0，之后的每次构造大顶堆只需要在左半部分或者右半部分处理元素。
+
+因为第一次构造大顶堆完成后，只交换了最后一个元素与根元素，所以这个新的根节点如果下层的话，只会下层到左子树或者右子树，所以再次调整大顶堆时，应该是每次折半处理的，所以应该是logN。
+
+## 优化后的堆排序
+
+```
+/**
+ 堆排序
+
+ @param randomNumbers 随机数组
+ @return 排序后的数组
+ */
++ (NSMutableArray *)heapSort:(NSMutableArray *)randomNumbers
+{
+    if (![randomNumbers isKindOfClass:[NSMutableArray class]]) {
+        NSLog(@"参数类型错误，请使用NSMutableArray类型对象做入参");
+        return nil;
+    }
+
+    if (randomNumbers.count <= 1) {
+        return randomNumbers;
+    }
+    
+    int count = (int)randomNumbers.count;
+    // 1.构造一个大顶堆，第一次是从最后一个非叶子节点开始，从下至上，从左至右来构造
+    int lastParent = count / 2 - 1;
+    for (int i = lastParent; i >= 0; i--) {
+        [self sink:randomNumbers index:i count:count];
+    }
+    
+    for (int j = count - 1; j > 0; j--) {
+        // 将堆顶元素与最后一个元素互换位置
+        [randomNumbers exchangeObjectAtIndex:0 withObjectAtIndex:j];
+        // 对剩下的元素重新调整，构造成堆
+        [self sink:randomNumbers index:0 count:j];
+    }
+    
+    return randomNumbers;
+}
+
++ (void)sink:(NSMutableArray *)randomNumbers index:(int)index count:(int)count
+{
+    NSNumber *temp = randomNumbers[index];
+    for (int k = index * 2 + 1; k < count; k = k * 2 + 1) {
+        // 先找出两个子节点中更大的那个节点
+        if (k + 1 < count && [randomNumbers[k] intValue] < [randomNumbers[k+1] intValue]) {
+            k++;
+        }
+        
+        // 然后将更大的那个子节点与父节点进行比较，如果子节点大于父节点，则交换
+        if ([randomNumbers[k] intValue] > [temp intValue]) {
+            [randomNumbers exchangeObjectAtIndex:index withObjectAtIndex:k];
+            index = k;
+        } else {
+            break;
+        }
+    }
+}
+```
+
+Have Fun!
+
+
+
+
+
+
+
+
+ 
+  
+
+
